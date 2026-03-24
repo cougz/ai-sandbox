@@ -73,24 +73,34 @@ const domainProvider = { tools: domainTools } as const;
 // User identity comes from this.props.email (set by OAuthProvider after Access login).
 // Workspace is backed by D1 and keyed by email — persistent across all sessions.
 
+// Module-level Workspace cache — mirrors the pattern in access-handler.ts.
+// Workspace registers itself in a WeakMap inside @cloudflare/shell and throws if the
+// same (sql-source, namespace) pair is constructed twice in one isolate lifetime.
+// Keying by the D1 binding object ensures one Workspace per (binding, namespace).
+const agentWsCache = new WeakMap<object, Map<string, Workspace>>();
+
 export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
   server = new McpServer({ name: "ai-sandbox", version: "1.0.0" });
 
   // D1-backed workspace: keyed by the user's email so files persist across sessions.
-  // Cached per DO instance — Workspace registers its namespace once per sql source.
   // Namespace is derived from email so each user gets an isolated D1 table.
-  private _workspace?: Workspace;
   get workspace(): Workspace {
-    if (!this._workspace) {
-      const email = this.props?.email ?? "anonymous";
-      this._workspace = new Workspace({
+    const email = this.props?.email ?? "anonymous";
+    const ns    = emailToNamespace(email);
+    const db    = this.env.WORKSPACE_DB as unknown as object;
+    let byNs = agentWsCache.get(db);
+    if (!byNs) { byNs = new Map(); agentWsCache.set(db, byNs); }
+    let ws = byNs.get(ns);
+    if (!ws) {
+      ws = new Workspace({
         sql: this.env.WORKSPACE_DB as unknown as SqlStorage,
-        namespace: emailToNamespace(email),
+        namespace: ns,
         r2: this.env.STORAGE,
         name: () => email,
       });
+      byNs.set(ns, ws);
     }
-    return this._workspace;
+    return ws;
   }
 
   async init() {
