@@ -1,4 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpAgent } from "agents/mcp";
 import { DynamicWorkerExecutor, resolveProvider } from "@cloudflare/codemode";
 import { Workspace } from "@cloudflare/shell";
@@ -8,63 +10,70 @@ import { z } from "zod";
 import { domainTools } from "./tools/example";
 
 // ─── Env ─────────────────────────────────────────────────────────────────────
-// Run `npm run types` after editing wrangler.jsonc to regenerate this from
-// the generated worker-configuration.d.ts instead.
 
 export interface Env {
-  // Dynamic Worker Loader — required (Workers paid plan)
   LOADER: WorkerLoader;
-  // Durable Object binding — self-referential, managed by wrangler
   SandboxAgent: DurableObjectNamespace;
-  // R2 for large file spill-over. Remove if you don't need persistent large files.
   STORAGE?: R2Bucket;
 }
 
 // ─── Domain tool provider ────────────────────────────────────────────────────
-// Wrap domainTools as a ToolProvider for the codemode executor.
-// The sandbox accesses these as `codemode.toolName({ ...args })`.
-// Add/remove tools in src/tools/example.ts (or replace the file entirely).
-
-// Convert an AI SDK-style tool map (from this.mcp.getTools()) into a plain
-// ToolProvider that @cloudflare/codemode can resolve without the `ai` peer dep.
-function mcpToProvider(tools: Record<string, any>, name: string) {
-  return {
-    name,
-    tools: Object.fromEntries(
-      Object.entries(tools)
-        .filter(([, t]) => typeof t.execute === "function")
-        .map(([toolName, t]) => [
-          toolName,
-          {
-            description: (t.description as string) ?? toolName,
-            execute: (args: unknown) => t.execute(args, {}),
-          },
-        ])
-    ),
-  };
-}
 
 const domainProvider = {
-  // name defaults to "codemode" — the LLM calls codemode.kvGet({ key: "..." })
   tools: domainTools,
 } as const;
 
+// ─── GitPrism provider ───────────────────────────────────────────────────────
+// Calls the GitPrism MCP server via the MCP SDK Client.
+// Runs on the HOST (can make outbound HTTP), not inside the sandbox.
+// The sandbox calls gitprism.ingest_repo({ url, detail }) via Workers RPC.
+//
+// We create a fresh Client per call because GitPrism is stateless — there is
+// no persistent session to maintain across Durable Object invocations.
+
+function makeGitprismProvider() {
+  return {
+    name: "gitprism",
+    tools: {
+      ingest_repo: {
+        description: [
+          "Convert any public GitHub repository into LLM-ready Markdown.",
+          "Args: { url: string (GitHub URL or owner/repo shorthand),",
+          "        detail?: 'summary' | 'structure' | 'file-list' | 'full' (default: 'full') }",
+          "detail levels:",
+          "  summary    — YAML front-matter: repo name, ref, file count, total size",
+          "  structure  — summary + ASCII directory tree",
+          "  file-list  — structure + table of every file with size and line count",
+          "  full       — everything above + complete file contents",
+        ].join("\n"),
+        execute: async (args: unknown) => {
+          const { url, detail = "full" } = args as { url: string; detail?: string };
+          const client = new Client({ name: "ai-sandbox", version: "1.0.0" });
+          const transport = new StreamableHTTPClientTransport(
+            new URL("https://gitprism.cloudemo.org/mcp")
+          );
+          await client.connect(transport);
+          try {
+            const result = await client.callTool({
+              name: "ingest_repo",
+              arguments: { url, detail },
+            });
+            const content = (result.content as Array<{ type: string; text?: string }>)[0];
+            return content?.type === "text" ? content.text : JSON.stringify(content);
+          } finally {
+            await client.close();
+          }
+        },
+      },
+    },
+  };
+}
+
 // ─── SandboxAgent ─────────────────────────────────────────────────────────────
-// One Durable Object instance per MCP session.
-//
-// Each instance has:
-//   - Its own isolated SQLite workspace (via @cloudflare/shell Workspace)
-//   - Access to the Dynamic Worker Loader for spinning up sandboxes
-//   - Two MCP tools: run_code and run_bundled_code
-//
-// OpenCode connects to this as a remote MCP server. Each chat session
-// that uses the sandbox gets its own isolated file system automatically.
 
 export class SandboxAgent extends McpAgent<Env, Record<string, never>, {}> {
   server = new McpServer({ name: "ai-sandbox", version: "1.0.0" });
 
-  // Persistent, per-session filesystem backed by the DO's SQLite + optional R2.
-  // Files survive across multiple run_code calls within the same session.
   workspace = new Workspace({
     sql: this.ctx.storage.sql,
     r2: this.env.STORAGE,
@@ -72,34 +81,6 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, {}> {
   });
 
   async init() {
-    // ── Connect to GitPrism MCP server ───────────────────────────────────────
-    // GitPrism converts any public GitHub repo to LLM-ready Markdown.
-    // Connecting here makes its tools available inside the sandbox as gitprism.*
-    //
-    // Auth note: GitPrism uses a server-side GITHUB_TOKEN — no OAuth needed
-    // from our side. The token lives on their Worker; we just call the MCP endpoint.
-    await this.addMcpServer("gitprism", "https://gitprism.cloudemo.org/mcp", {
-      transport: { type: "streamable-http" },
-    });
-
-    // ── Tool: run_code ───────────────────────────────────────────────────────
-    // The primary tool. Runs a JavaScript snippet in an isolated Dynamic Worker.
-    //
-    // Inside the sandbox, three namespaces are available:
-    //
-    //   state.*     — full filesystem (read/write/search/replace/diff/glob...)
-    //                 Backed by this session's persistent Workspace.
-    //
-    //   codemode.*  — your TypeScript RPC tools (src/tools/example.ts)
-    //                 Runs in the HOST worker, not the sandbox.
-    //
-    //   gitprism.*  — GitPrism MCP tools, proxied through the host Worker.
-    //                 e.g. gitprism.ingest_repo({ url: "owner/repo", detail: "summary" })
-    //
-    // Network access is blocked by default (globalOutbound: null).
-    // MCP tool calls cross the sandbox boundary via Workers RPC — they are NOT
-    // outbound HTTP from inside the sandbox. The host Worker makes those calls.
-
     this.server.tool(
       "run_code",
       [
@@ -123,16 +104,13 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, {}> {
       async ({ code }) => {
         const executor = new DynamicWorkerExecutor({
           loader: this.env.LOADER,
-          globalOutbound: null, // fully isolated — no outbound network
+          globalOutbound: null,
         });
 
         const { result, logs, error } = await executor.execute(code, [
           resolveProvider(stateTools(this.workspace)),
           resolveProvider(domainProvider),
-          // GitPrism MCP tools under the "gitprism" namespace.
-          // execute() functions run on the HOST (can make outbound calls),
-          // not inside the sandbox.
-          resolveProvider(mcpToProvider(this.mcp.getTools(), "gitprism")),
+          resolveProvider(makeGitprismProvider()),
         ]);
 
         return {
@@ -146,27 +124,6 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, {}> {
       }
     );
 
-    // ── Tool: run_bundled_code ───────────────────────────────────────────────
-    // Like run_code, but first bundles specified npm packages so the sandbox
-    // can import them. Slower than run_code (bundles at runtime via npmjs.org).
-    //
-    // The bundled modules are injected into the sandbox as importable modules.
-    // state.* and codemode.* tools are still available.
-    //
-    // Example usage by the LLM:
-    //
-    //   run_bundled_code({
-    //     packages: { "lodash": "^4", "date-fns": "^3" },
-    //     code: `
-    //       async () => {
-    //         const { chunk } = await import("lodash");
-    //         const { format } = await import("date-fns");
-    //         const arr = [1,2,3,4,5];
-    //         return chunk(arr, 2).map(c => format(new Date(), "'chunk-'dd") + c);
-    //       }
-    //     `
-    //   })
-
     this.server.tool(
       "run_bundled_code",
       [
@@ -176,7 +133,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, {}> {
         "The bundled modules are injected into the sandbox. Use dynamic import():",
         "  const { chunk } = await import('lodash');",
         "",
-        "state.* and codemode.* tools are available exactly as in run_code.",
+        "state.*, codemode.*, and gitprism.* are available exactly as in run_code.",
       ].join("\n"),
       {
         code: z.string().describe(
@@ -190,17 +147,13 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, {}> {
           ),
       },
       async ({ code, packages }) => {
-        // Bundle the requested packages into a module map
         const { modules: bundledModules } = await createWorker({
           files: {
-            // Dummy entry — we only care about resolving the declared deps
             "src/entry.ts": Object.keys(packages ?? {})
               .map((p) => `import "${p}";`)
               .join("\n") || "export {}",
             ...(packages
-              ? {
-                  "package.json": JSON.stringify({ dependencies: packages }),
-                }
+              ? { "package.json": JSON.stringify({ dependencies: packages }) }
               : {}),
           },
         });
@@ -208,14 +161,13 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, {}> {
         const executor = new DynamicWorkerExecutor({
           loader: this.env.LOADER,
           globalOutbound: null,
-          // Inject bundled packages so the sandbox can `await import('...')`
           modules: bundledModules as Record<string, string>,
         });
 
         const { result, logs, error } = await executor.execute(code, [
           resolveProvider(stateTools(this.workspace)),
           resolveProvider(domainProvider),
-          resolveProvider(mcpToProvider(this.mcp.getTools(), "gitprism")),
+          resolveProvider(makeGitprismProvider()),
         ]);
 
         return {
@@ -242,8 +194,5 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, {}> {
 //       "url": "https://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev/mcp"
 //     }
 //   }
-//
-// Each OpenCode session automatically gets its own DO instance (isolated
-// filesystem, isolated sandbox history). No manual session management needed.
 
 export default SandboxAgent.serve("/mcp", { binding: "SandboxAgent" });
