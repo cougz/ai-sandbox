@@ -808,9 +808,19 @@ export default {
     // ── View endpoint (public) ───────────────────────────────────────────────
     if (url.pathname === "/view") {
       const userEmail = url.searchParams.get("user");
-      if (!userEmail) return new Response("Missing required query param: ?user=EMAIL", { status: 400 });
-      const id = env.SandboxAgent.idFromName(`user:${userEmail}`);
-      return env.SandboxAgent.get(id).fetch(request);
+      // Legacy links used ?session= (the raw MCP session token as DO name)
+      const sessionName = url.searchParams.get("session");
+
+      if (userEmail) {
+        const id = env.SandboxAgent.idFromName(`user:${userEmail}`);
+        return env.SandboxAgent.get(id).fetch(request);
+      } else if (sessionName) {
+        // Backward compat: route directly by the old DO name
+        const id = env.SandboxAgent.idFromName(sessionName);
+        return env.SandboxAgent.get(id).fetch(request);
+      } else {
+        return new Response("Missing query param: ?user=EMAIL or ?session=SESSION", { status: 400 });
+      }
     }
 
     return new Response("Not found", { status: 404 });
