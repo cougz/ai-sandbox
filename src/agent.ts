@@ -26,6 +26,7 @@ export interface Env {
   // Bindings
   LOADER: WorkerLoader;
   SandboxAgent: DurableObjectNamespace;
+  MCP_OBJECT: DurableObjectNamespace;   // alias for SandboxAgent — required by OAuthProvider
   STORAGE?: R2Bucket;
   USER_REGISTRY: KVNamespace;
   OAUTH_KV: KVNamespace;

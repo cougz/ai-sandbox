@@ -8,7 +8,10 @@
   "worker_loaders": [{ "binding": "LOADER" }],
 
   "durable_objects": {
-    "bindings": [{ "name": "SandboxAgent", "class_name": "SandboxAgent" }]
+    "bindings": [
+      { "name": "SandboxAgent", "class_name": "SandboxAgent" },
+      { "name": "MCP_OBJECT",   "class_name": "SandboxAgent" }
+    ]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SandboxAgent"] }],
 
