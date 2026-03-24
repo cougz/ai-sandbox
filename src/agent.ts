@@ -375,10 +375,10 @@ async function handleAdminApi(request: Request, env: Env): Promise<Response> {
       list.keys.map(async (k) => {
         const record = await env.USER_REGISTRY.get<UserRecord>(k.name, "json");
         if (!record) return null;
-        const stub = env.SandboxAgent.get(env.SandboxAgent.idFromName(`user:${record.email}`));
+        const doName = `user:${record.email}`;
         let files: { path: string; size: number }[] = [];
         try {
-          const res = await stub.fetch(new Request(`${url.origin}/__admin/files`, { method: "GET" }));
+          const res = await stubFetchAdmin(env.SandboxAgent, doName, `${url.origin}/__admin/files`, "GET");
           if (res.ok) files = await res.json();
         } catch { /* DO may not exist yet */ }
         return { ...record, fileCount: files.length };
@@ -405,7 +405,7 @@ async function handleAdminApi(request: Request, env: Env): Promise<Response> {
   if (userMatch) {
     const email = decodeURIComponent(userMatch[1]);
     const sub   = userMatch[2] ?? "";
-    const stub  = env.SandboxAgent.get(env.SandboxAgent.idFromName(`user:${email}`));
+    const doName = `user:${email}`;
 
     if (method === "PUT" && sub === "") {
       const body = await request.json<{ clientId?: string; name?: string }>();
@@ -427,19 +427,19 @@ async function handleAdminApi(request: Request, env: Env): Promise<Response> {
     }
 
     if (method === "GET" && sub === "/files") {
-      const res = await stub.fetch(new Request(`${url.origin}/__admin/files`, { method: "GET" }));
+      const res = await stubFetchAdmin(env.SandboxAgent, doName, `${url.origin}/__admin/files`, "GET");
       return res.ok ? jsonResponse(await res.json()) : jsonResponse([], 200);
     }
 
     if (method === "DELETE" && sub === "/workspace") {
-      await stub.fetch(new Request(`${url.origin}/__admin/workspace`, { method: "DELETE" }));
+      await stubFetchAdmin(env.SandboxAgent, doName, `${url.origin}/__admin/workspace`, "DELETE");
       return jsonResponse({ wiped: email });
     }
 
     if (method === "DELETE" && sub === "/files") {
       const filePath = url.searchParams.get("path");
       if (!filePath) return jsonResponse({ error: "Missing ?path=" }, 400);
-      await stub.fetch(new Request(`${url.origin}/__admin/files?path=${encodeURIComponent(filePath)}`, { method: "DELETE" }));
+      await stubFetchAdmin(env.SandboxAgent, doName, `${url.origin}/__admin/files?path=${encodeURIComponent(filePath)}`, "DELETE");
       return jsonResponse({ deleted: filePath });
     }
   }
@@ -759,6 +759,37 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, {}> {
   }
 }
 
+// ─── DO stub helper ───────────────────────────────────────────────────────────
+// The partyserver/agents base class (Server.fetch) checks for x-partykit-room
+// before initialising. routePartykitRequest sets it automatically; direct stub
+// calls must add it manually or the DO throws "Missing namespace or room headers".
+
+function stubFetch(
+  namespace: DurableObjectNamespace,
+  doName: string,
+  request: Request
+): Promise<Response> {
+  const id   = namespace.idFromName(doName);
+  const stub = namespace.get(id);
+  const req  = new Request(request);
+  req.headers.set("x-partykit-room", doName);
+  return stub.fetch(req);
+}
+
+// Admin-internal variant: builds a plain Request to an /__admin/* path
+function stubFetchAdmin(
+  namespace: DurableObjectNamespace,
+  doName: string,
+  urlStr: string,
+  method: string
+): Promise<Response> {
+  const id   = namespace.idFromName(doName);
+  const stub = namespace.get(id);
+  const req  = new Request(urlStr, { method });
+  req.headers.set("x-partykit-room", doName);
+  return stub.fetch(req);
+}
+
 // ─── Worker fetch handler ─────────────────────────────────────────────────────
 //
 // Authentication flow for OpenCode users:
@@ -801,23 +832,19 @@ export default {
           },
         });
       }
-      const id = env.SandboxAgent.idFromName(`user:${email}`);
-      return env.SandboxAgent.get(id).fetch(request);
+      return stubFetch(env.SandboxAgent, `user:${email}`, request);
     }
 
     // ── View endpoint (public) ───────────────────────────────────────────────
     if (url.pathname === "/view") {
-      const userEmail = url.searchParams.get("user");
-      // Legacy links used ?session= (the raw MCP session token as DO name)
+      const userEmail  = url.searchParams.get("user");
       const sessionName = url.searchParams.get("session");
 
       if (userEmail) {
-        const id = env.SandboxAgent.idFromName(`user:${userEmail}`);
-        return env.SandboxAgent.get(id).fetch(request);
+        return stubFetch(env.SandboxAgent, `user:${userEmail}`, request);
       } else if (sessionName) {
-        // Backward compat: route directly by the old DO name
-        const id = env.SandboxAgent.idFromName(sessionName);
-        return env.SandboxAgent.get(id).fetch(request);
+        // Backward compat: old links used the raw MCP session token as DO name
+        return stubFetch(env.SandboxAgent, sessionName, request);
       } else {
         return new Response("Missing query param: ?user=EMAIL or ?session=SESSION", { status: 400 });
       }
