@@ -1,7 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { DynamicWorkerExecutor, resolveProvider } from "@cloudflare/codemode";
-import { aiTools } from "@cloudflare/codemode/ai";
 import { Workspace } from "@cloudflare/shell";
 import { stateTools } from "@cloudflare/shell/workers";
 import { createWorker } from "@cloudflare/worker-bundler";
@@ -25,6 +24,25 @@ export interface Env {
 // Wrap domainTools as a ToolProvider for the codemode executor.
 // The sandbox accesses these as `codemode.toolName({ ...args })`.
 // Add/remove tools in src/tools/example.ts (or replace the file entirely).
+
+// Convert an AI SDK-style tool map (from this.mcp.getTools()) into a plain
+// ToolProvider that @cloudflare/codemode can resolve without the `ai` peer dep.
+function mcpToProvider(tools: Record<string, any>, name: string) {
+  return {
+    name,
+    tools: Object.fromEntries(
+      Object.entries(tools)
+        .filter(([, t]) => typeof t.execute === "function")
+        .map(([toolName, t]) => [
+          toolName,
+          {
+            description: (t.description as string) ?? toolName,
+            execute: (args: unknown) => t.execute(args, {}),
+          },
+        ])
+    ),
+  };
+}
 
 const domainProvider = {
   // name defaults to "codemode" — the LLM calls codemode.kvGet({ key: "..." })
@@ -114,7 +132,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, {}> {
           // GitPrism MCP tools under the "gitprism" namespace.
           // execute() functions run on the HOST (can make outbound calls),
           // not inside the sandbox.
-          resolveProvider(aiTools(this.mcp.getTools(), "gitprism")),
+          resolveProvider(mcpToProvider(this.mcp.getTools(), "gitprism")),
         ]);
 
         return {
@@ -197,7 +215,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, {}> {
         const { result, logs, error } = await executor.execute(code, [
           resolveProvider(stateTools(this.workspace)),
           resolveProvider(domainProvider),
-          resolveProvider(aiTools(this.mcp.getTools(), "gitprism")),
+          resolveProvider(mcpToProvider(this.mcp.getTools(), "gitprism")),
         ]);
 
         return {
