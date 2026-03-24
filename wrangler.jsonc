@@ -5,38 +5,39 @@
   "compatibility_date": "2026-03-01",
   "compatibility_flags": ["nodejs_compat"],
 
-  // Dynamic Worker Loader — this is what enables isolated sandboxes
   "worker_loaders": [{ "binding": "LOADER" }],
 
-  // McpAgent is a Durable Object — one instance per session, with SQLite storage
   "durable_objects": {
     "bindings": [{ "name": "SandboxAgent", "class_name": "SandboxAgent" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SandboxAgent"] }],
 
-  // KV namespace for user registry (clientId → email, email → user record)
-  // Create with: wrangler kv namespace create USER_REGISTRY
+  // KV namespace — create with: wrangler kv namespace create USER_REGISTRY
   "kv_namespaces": [
-    { "binding": "USER_REGISTRY", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+    { "binding": "USER_REGISTRY", "id": "670e81fe1d294d50bbf1d1c6e5b9ded3" }
   ],
 
   "vars": {
-    // Public base URL for shareable /view links
     "PUBLIC_URL": "https://ai-sandbox.cloudemo.org",
 
-    // Fallback user identity for local wrangler dev (never used in production)
+    // Google OAuth client ID (from Google Cloud Console)
+    // The OAuth client needs https://ai-sandbox.cloudemo.org/oauth/callback
+    // added as an Authorised redirect URI in Google Cloud Console.
+    "GOOGLE_CLIENT_ID": "REPLACE_WITH_GOOGLE_CLIENT_ID",
+
+    // Allowed email domain — only accounts ending with this may authenticate
+    "ALLOWED_EMAIL_DOMAIN": "@cloudflare.com",
+
+    // Dev fallback — only used by wrangler dev, ignored in production
     "DEV_USER_ID": "dev@cloudflare.com"
   },
 
-  // Secrets (set after deploy):
-  //   wrangler secret put ADMIN_SECRET
-  //   → used to authenticate /admin requests
+  // Secrets — set after deploy:
+  //   wrangler secret put GOOGLE_CLIENT_SECRET   (from Google Cloud Console)
+  //   wrangler secret put JWT_SECRET             (any long random string)
+  //   wrangler secret put ADMIN_SECRET           (any long random string)
 
-  // R2 for large file spill-over from the sandbox filesystem
   "r2_buckets": [
-    {
-      "binding": "STORAGE",
-      "bucket_name": "sandbox-storage"
-    }
+    { "binding": "STORAGE", "bucket_name": "sandbox-storage" }
   ]
 }
