@@ -12,30 +12,35 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SandboxAgent"] }],
 
-  // KV namespace — create with: wrangler kv namespace create USER_REGISTRY
+  // KV for the OAuth provider (tokens, client registrations, state)
+  // Create with: wrangler kv namespace create OAUTH_KV
   "kv_namespaces": [
-    { "binding": "USER_REGISTRY", "id": "670e81fe1d294d50bbf1d1c6e5b9ded3" }
+    { "binding": "OAUTH_KV",       "id": "REPLACE_WITH_OAUTH_KV_ID"       },
+    { "binding": "USER_REGISTRY",  "id": "670e81fe1d294d50bbf1d1c6e5b9ded3" }
+  ],
+
+  // D1 for persistent user workspaces (files survive across sessions)
+  // Create with: wrangler d1 create sandbox-workspaces
+  "d1_databases": [
+    { "binding": "WORKSPACE_DB", "database_name": "sandbox-workspaces", "database_id": "REPLACE_WITH_D1_ID" }
   ],
 
   "vars": {
     "PUBLIC_URL": "https://ai-sandbox.cloudemo.org",
-
-    // Google OAuth client ID (from Google Cloud Console)
-    // The OAuth client needs https://ai-sandbox.cloudemo.org/oauth/callback
-    // added as an Authorised redirect URI in Google Cloud Console.
-    "GOOGLE_CLIENT_ID": "REPLACE_WITH_GOOGLE_CLIENT_ID",
-
-    // Allowed email domain — only accounts ending with this may authenticate
-    "ALLOWED_EMAIL_DOMAIN": "@cloudflare.com",
-
-    // Dev fallback — only used by wrangler dev, ignored in production
-    "DEV_USER_ID": "dev@cloudflare.com"
+    // Allowed email domain for Access login
+    "ALLOWED_EMAIL_DOMAIN": "@cloudflare.com"
   },
 
   // Secrets — set after deploy:
-  //   wrangler secret put GOOGLE_CLIENT_SECRET   (from Google Cloud Console)
-  //   wrangler secret put JWT_SECRET             (any long random string)
-  //   wrangler secret put ADMIN_SECRET           (any long random string)
+  //   wrangler secret put ADMIN_SECRET
+  //
+  // Cloudflare Access for SaaS OIDC (create app in Zero Trust → Access → Applications → SaaS):
+  //   wrangler secret put ACCESS_CLIENT_ID
+  //   wrangler secret put ACCESS_CLIENT_SECRET
+  //   wrangler secret put ACCESS_TOKEN_URL
+  //   wrangler secret put ACCESS_AUTHORIZATION_URL
+  //   wrangler secret put ACCESS_JWKS_URL
+  //   wrangler secret put COOKIE_ENCRYPTION_KEY  (any random string, e.g. openssl rand -hex 32)
 
   "r2_buckets": [
     { "binding": "STORAGE", "bucket_name": "sandbox-storage" }

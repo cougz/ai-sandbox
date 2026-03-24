@@ -12,6 +12,7 @@
     "@cloudflare/codemode": "^0.3.0",
     "@cloudflare/shell": "^0.3.0",
     "@cloudflare/worker-bundler": "^0.0.4",
+    "@cloudflare/workers-oauth-provider": "^0.2.3",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.23.0"
   },
