@@ -9,7 +9,7 @@ import { stateTools } from "@cloudflare/shell/workers";
 import { createWorker } from "@cloudflare/worker-bundler";
 import { z } from "zod";
 import { domainTools } from "./tools/example";
-import { handleRequest } from "./access-handler";
+import { handleRequest, emailToNamespace } from "./access-handler";
 import type { Props } from "./workers-oauth-utils";
 
 // ─── Env ──────────────────────────────────────────────────────────────────────
@@ -78,13 +78,16 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
 
   // D1-backed workspace: keyed by the user's email so files persist across sessions.
   // Cached per DO instance — Workspace registers its namespace once per sql source.
+  // Namespace is derived from email so each user gets an isolated D1 table.
   private _workspace?: Workspace;
   get workspace(): Workspace {
     if (!this._workspace) {
+      const email = this.props?.email ?? "anonymous";
       this._workspace = new Workspace({
         sql: this.env.WORKSPACE_DB as unknown as SqlStorage,
+        namespace: emailToNamespace(email),
         r2: this.env.STORAGE,
-        name: () => this.props?.email ?? "anonymous",
+        name: () => email,
       });
     }
     return this._workspace;

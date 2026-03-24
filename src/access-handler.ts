@@ -176,12 +176,33 @@ export async function handleRequest(
 
 // ─── Workspace factory (D1-backed) ────────────────────────────────────────────
 
+// Derives a valid Workspace namespace from an email address.
+// Must match the same function in agent.ts — both sides must agree on the namespace.
+export function emailToNamespace(email: string): string {
+  return "u_" + email.toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_").replace(/_$/, "").slice(0, 60);
+}
+
+// Module-level cache: Workspace registers itself in a WeakMap inside @cloudflare/shell
+// and throws if the same (sql-source, namespace) pair is created twice in one isolate.
+// Caching here ensures we only ever construct one Workspace per (D1 binding, namespace).
+const wsCache = new WeakMap<object, Map<string, Workspace>>();
+
 function makeWorkspace(email: string, env: Env): Workspace {
-  return new Workspace({
-    sql: env.WORKSPACE_DB as unknown as SqlStorage,
-    r2: env.STORAGE,
-    name: () => email,
-  });
+  const db = env.WORKSPACE_DB as unknown as object;
+  let byNs = wsCache.get(db);
+  if (!byNs) { byNs = new Map(); wsCache.set(db, byNs); }
+  const ns = emailToNamespace(email);
+  let ws = byNs.get(ns);
+  if (!ws) {
+    ws = new Workspace({
+      sql: env.WORKSPACE_DB as unknown as SqlStorage,
+      namespace: ns,
+      r2: env.STORAGE,
+      name: () => email,
+    });
+    byNs.set(ns, ws);
+  }
+  return ws;
 }
 
 // ─── User record helpers ──────────────────────────────────────────────────────
