@@ -12,6 +12,14 @@ import { domainTools } from "./tools/example";
 import { handleRequest } from "./access-handler";
 import type { Props } from "./workers-oauth-utils";
 
+const CONTENT_TYPES: Record<string, string> = {
+  html: "text/html; charset=utf-8",
+  json: "application/json; charset=utf-8",
+  md:   "text/markdown; charset=utf-8",
+  txt:  "text/plain; charset=utf-8",
+  csv:  "text/csv; charset=utf-8",
+};
+
 // ─── Env ──────────────────────────────────────────────────────────────────────
 
 export interface Env {
@@ -82,6 +90,29 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
       r2: this.env.STORAGE,
       name: () => this.props?.email ?? "anonymous",
     });
+  }
+
+  // ── Legacy /view handler ──────────────────────────────────────────────────
+  // Called when old ?session= links route directly to a pre-OAuth DO instance.
+  // Those DOs have their workspace in DO-local SQLite (this.ctx.storage.sql),
+  // not in D1, so we build a Workspace against the DO's own storage here.
+  async onRequest(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/view") {
+      const file = url.searchParams.get("file") ?? "/reports/dashboard.html";
+      const legacyWorkspace = new Workspace({
+        sql: this.ctx.storage.sql,
+        r2: this.env.STORAGE,
+        name: () => this.name,
+      });
+      const content = await legacyWorkspace.readFile(file);
+      if (content === null) return new Response(`File not found: ${file}`, { status: 404 });
+      const ext = file.split(".").pop()?.toLowerCase() ?? "txt";
+      return new Response(content, {
+        headers: { "Content-Type": CONTENT_TYPES[ext] ?? "text/plain; charset=utf-8" },
+      });
+    }
+    return new Response("Not found", { status: 404 });
   }
 
   async init() {
