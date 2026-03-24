@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "agents": "^0.8.0",
-    "ai": "^4.0.0",
+    "ai": "^3.0.0",
     "@cloudflare/codemode": "^0.3.0",
     "@cloudflare/shell": "^0.3.0",
     "@cloudflare/worker-bundler": "^0.0.4",
