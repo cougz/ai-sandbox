@@ -285,12 +285,12 @@ async function handleAdminApi(request: Request, env: Env): Promise<Response> {
     const users = await Promise.all(list.keys.map(async k => {
       const r = await env.USER_REGISTRY.get<UserRecord>(k.name, "json");
       if (!r) return null;
-      // Count workspace files directly via D1-backed workspace
+      // Count workspace files (glob returns file-info objects — filter to files only)
       let fileCount = 0;
       try {
         const ws = makeWorkspace(r.email, env);
-        const files = await ws.glob("/**/*");
-        fileCount = files.length;
+        const entries = await ws.glob("/**/*") as Array<{ type: string }>;
+        fileCount = entries.filter(e => e.type === "file").length;
       } catch { /* workspace may be empty */ }
       return { ...r, fileCount };
     }));
@@ -321,20 +321,18 @@ async function handleAdminApi(request: Request, env: Env): Promise<Response> {
     // GET /users/:email/files
     if (method === "GET" && sub === "/files") {
       try {
-        const files = await workspace.glob("/**/*");
-        const withSizes = await Promise.all(files.map(async p => {
-          const stat = await workspace.stat(p);
-          return { path: p, size: stat?.size ?? 0 };
-        }));
-        return jsonResp(withSizes);
-      } catch { return jsonResp([]); }
+        // glob() returns file-info objects {path, name, type, size, ...}, not strings
+        const entries = await workspace.glob("/**/*") as Array<{ path: string; type: string; size: number }>;
+        const files = entries.filter(e => e.type === "file").map(e => ({ path: e.path, size: e.size }));
+        return jsonResp(files);
+      } catch (err) { return jsonResp({ error: String(err) }, 500); }
     }
 
     // DELETE /users/:email/workspace
     if (method === "DELETE" && sub === "/workspace") {
       try {
-        const files = await workspace.glob("/**/*");
-        await Promise.all(files.map(f => workspace.rm(f)));
+        const entries = await workspace.glob("/**/*") as Array<{ path: string; type: string }>;
+        await Promise.all(entries.filter(e => e.type === "file").map(e => workspace.rm(e.path)));
       } catch { /* already empty */ }
       return jsonResp({ wiped: email });
     }
