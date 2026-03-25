@@ -25,7 +25,6 @@ export interface Env {
   WORKSPACE_DB: D1Database;
   // Vars
   PUBLIC_URL: string;
-  ALLOWED_EMAIL_DOMAIN: string;
   // Secrets
   ADMIN_SECRET?: string;
   ACCESS_CLIENT_ID: string;

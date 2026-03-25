@@ -180,7 +180,6 @@ wrangler secret put ADMIN_SECRET
 | Variable | Default | Description |
 |---|---|---|
 | `PUBLIC_URL` | `https://ai-sandbox.cloudemo.org` | Base URL used to build shareable `/view` links from `get_report_url`. Update if you use a different domain. |
-| `ALLOWED_EMAIL_DOMAIN` | - | Server-side email domain check after Access login. Set to restrict authentication to a specific org (e.g. `@example.com`). |
 
 ---
 

@@ -30,9 +30,7 @@
   ],
 
   "vars": {
-    "PUBLIC_URL": "https://ai-sandbox.cloudemo.org",
-    // Allowed email domain for Access login
-    "ALLOWED_EMAIL_DOMAIN": "@cloudflare.com"
+    "PUBLIC_URL": "https://ai-sandbox.cloudemo.org"
   },
 
   // Secrets — set after deploy:

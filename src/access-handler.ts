@@ -123,11 +123,6 @@ export async function handleRequest(
     const claims = await verifyAccessToken(env, idToken!);
     const email: string = claims.email;
 
-    // Domain restriction
-    if (!email.endsWith(env.ALLOWED_EMAIL_DOMAIN)) {
-      return new Response(`Access denied — only ${env.ALLOWED_EMAIL_DOMAIN} accounts are allowed.`, { status: 403 });
-    }
-
     // Auto-provision user record on first login
     await ensureUserRecord(email, claims.name ?? email, env);
 
