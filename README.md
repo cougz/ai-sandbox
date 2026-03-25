@@ -2,6 +2,11 @@
 
 A multi-user AI agent sandbox deployed on Cloudflare Workers. Exposes an MCP server that lets any MCP-compatible client (OpenCode, Claude Desktop, Cursor, etc.) execute JavaScript in isolated V8 sandboxes, operate on a persistent per-user filesystem, and generate shareable HTML reports — all authenticated via Cloudflare Access.
 
+Built on two of Cloudflare's newest primitives:
+
+- **[Dynamic Workers](https://developers.cloudflare.com/dynamic-workers/)** — spins up a fresh, isolated Worker sandbox on every `run_code` call (~2ms startup). No shared state between executions. Each sandbox gets only the bindings you explicitly pass in.
+- **[Code Mode (`@cloudflare/codemode`)](https://developers.cloudflare.com/agents/api-reference/codemode/)** — instead of calling tools one at a time, the LLM writes an async JavaScript function that orchestrates multiple tools with real logic (conditionals, loops, error handling). Code runs inside the Dynamic Worker sandbox; tool calls are dispatched back to the host via Workers RPC.
+
 ## Architecture
 
 ```
@@ -21,12 +26,46 @@ OpenCode / MCP client
 └─────────────────────────────────────────┘
         │
         ├── Durable Object (SandboxAgent) — one per MCP session
-        │     └── Dynamic Worker Loader  — isolated V8 sandboxes
+        │     └── Dynamic Worker Loader  — isolated V8 sandboxes (via @cloudflare/codemode)
         │
         ├── D1 Database — persistent workspace files per user
         ├── R2 Bucket   — large file spill-over
         ├── KV (OAUTH_KV)     — OAuth tokens & state
         └── KV (USER_REGISTRY) — admin user registry
+```
+
+### How Code Mode + Dynamic Workers fit together
+
+```
+MCP client sends a natural-language task
+        │
+        ▼
+  SandboxAgent (Durable Object)
+        │
+        │  LLM writes an async JS function using codemode.* tool calls
+        ▼
+  DynamicWorkerExecutor (from @cloudflare/codemode)
+        │  spins up an isolated Worker via the LOADER binding
+        ▼
+  ┌─────────────────────────────────────────────┐
+  │  Isolated V8 Sandbox (Dynamic Worker)        │
+  │                                             │
+  │  async () => {                              │
+  │    const data = await codemode.kvGet(key)  │
+  │    if (data) {                              │
+  │      await codemode.kvSet(key, transform)  │
+  │    }                                        │
+  │    return result                            │
+  │  }                                          │
+  │                                             │
+  │  ✗ No outbound network (globalOutbound:null)│
+  │  ✓ codemode.* → Workers RPC → host tools   │
+  └─────────────────────────────────────────────┘
+        │
+        │  Workers RPC (ToolDispatcher)
+        ▼
+  Host Worker — executes the real tool logic
+  (state.*, codemode.*, gitprism.* — full env access)
 ```
 
 **Key design decisions:**
@@ -94,7 +133,7 @@ Zero Trust → Access → Applications → **Add an application** → **SaaS**
 |---|---|
 | Application name | `AI Sandbox MCP` |
 | Application type | `OIDC` |
-| Redirect URL | `https://ai-sandbox.cloudemo.org/callback` |
+| Redirect URL | `https://<your-domain>/callback` |
 | Scopes | `openid`, `email`, `profile` |
 
 Click **Save**. Note the values on the next screen:
@@ -109,12 +148,7 @@ Click **Save**. Note the values on the next screen:
 
 ### Step 3 — Add an Access policy
 
-On the same application, add a policy:
-
-- **Action:** Allow
-- **Rule:** Emails ending in `@cloudflare.com`
-
-This ensures only `@cloudflare.com` accounts can authenticate. The domain is also enforced server-side via the `ALLOWED_EMAIL_DOMAIN` env var.
+On the same application, add a policy to restrict which users can authenticate (e.g. by email domain, identity provider group, or specific emails).
 
 ---
 
@@ -146,7 +180,7 @@ wrangler secret put ADMIN_SECRET
 | Variable | Default | Description |
 |---|---|---|
 | `PUBLIC_URL` | `https://ai-sandbox.cloudemo.org` | Base URL used to build shareable `/view` links from `get_report_url`. Update if you use a different domain. |
-| `ALLOWED_EMAIL_DOMAIN` | `@cloudflare.com` | Server-side email domain check after Access login. Change to restrict to a different org. |
+| `ALLOWED_EMAIL_DOMAIN` | — | Server-side email domain check after Access login. Set to restrict authentication to a specific org (e.g. `@example.com`). |
 
 ---
 
@@ -193,7 +227,7 @@ Each user adds this to their `opencode.jsonc`:
   "mcp": {
     "ai-sandbox": {
       "type": "remote",
-      "url": "https://ai-sandbox.cloudemo.org/mcp"
+      "url": "https://<your-domain>/mcp"
     }
   }
 }
@@ -211,13 +245,25 @@ A browser window opens → Cloudflare Access login → token stored in `~/.local
 
 ## MCP tools
 
-Once connected, the following tools are available in every session:
+Once connected, the following tools are available in every session.
 
 ### `run_code`
 
-Execute JavaScript in an isolated V8 sandbox (~2ms startup). No outbound network access.
+Execute JavaScript in an isolated V8 sandbox powered by **Dynamic Workers** (~2ms startup). No outbound network access from the sandbox — all interaction with the outside world goes through typed `codemode.*` tool calls dispatched via **Workers RPC** back to the host.
 
-Inside the sandbox:
+Inside the sandbox, the LLM writes an async function using **Code Mode** — it can chain tool calls with real logic rather than issuing them one at a time:
+
+```js
+async () => {
+  const raw = await codemode.kvGet({ key: "pipeline-data" });
+  const parsed = JSON.parse(raw);
+  const summary = parsed.runs.filter(r => r.status === "failed");
+  await codemode.kvSet({ key: "failures", value: JSON.stringify(summary) });
+  return summary.length;
+}
+```
+
+Available namespaces:
 
 | Namespace | Description |
 |---|---|
@@ -229,7 +275,7 @@ Files written via `state.*` persist permanently across all sessions for that use
 
 ### `run_bundled_code`
 
-Same as `run_code` but bundles npm packages at runtime so the sandbox can `import` them. Slower — prefer `run_code` for simple tasks.
+Same as `run_code` but bundles npm packages at runtime so the sandbox can `import` them. The Dynamic Worker sandbox receives the bundled modules injected as ES modules. Slower — prefer `run_code` for simple tasks.
 
 ### `get_report_url`
 
@@ -239,7 +285,7 @@ Returns a stable, shareable URL for any HTML file in the workspace. The link wor
 
 ## Admin dashboard
 
-Visit `https://ai-sandbox.cloudemo.org/admin` and enter your `ADMIN_SECRET`.
+Visit `https://<your-domain>/admin` and enter your `ADMIN_SECRET`.
 
 Features:
 - Lists all users who have authenticated (auto-populated)
@@ -268,7 +314,7 @@ export const domainTools = {
 };
 ```
 
-The LLM calls these as `codemode.myQuery({ sql: "..." })` inside the sandbox. The sandbox never has direct database access — it only sees return values.
+The LLM calls these as `codemode.myQuery({ sql: "..." })` inside the sandbox via Workers RPC. The sandbox never has direct database access — it only sees return values.
 
 ---
 
@@ -280,10 +326,10 @@ Generate reports from the sandbox and get a shareable link:
 User: "Analyse the pipeline data and create a dashboard"
 
 → run_code writes /reports/pipeline-dashboard.html
-→ get_report_url returns: https://ai-sandbox.cloudemo.org/view?user=tim@cloudflare.com&file=/reports/pipeline-dashboard.html
+→ get_report_url returns: https://<your-domain>/view?user=alice@example.com&file=/reports/pipeline-dashboard.html
 ```
 
-The LLM can use any styling approach — write self-contained HTML with inline CSS and Chart.js, or store reusable design tokens in the workspace (e.g. `/templates/cf-base.css`, `/templates/cf-charts.js`) and read them back with `state.readFile` before composing the final report.
+The LLM can use any styling approach — write self-contained HTML with inline CSS and Chart.js, or store reusable design tokens in the workspace (e.g. `/templates/base.css`, `/templates/charts.js`) and read them back with `state.readFile` before composing the final report.
 
 ---
 
