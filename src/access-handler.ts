@@ -695,12 +695,12 @@ tr:hover td{background:var(--cf-bg-hover)}
 .params-tbl code{font-family:"SF Mono","Fira Code",monospace;font-size:11px;background:rgba(235,213,193,.35);padding:1px 4px;border-radius:3px}
 .ws-bar{display:flex;align-items:center;gap:10px;margin-bottom:16px}
 .ws-bar label{margin:0;white-space:nowrap}
-.file-browser{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.file-browser{display:flex;flex-direction:column;gap:16px}
 .fb-left{border:1px solid var(--cf-border);background:var(--cf-bg-card);display:flex;flex-direction:column}
 .fb-hdr{display:flex;align-items:center;justify-content:space-between;padding:9px 13px;border-bottom:1px solid rgba(235,213,193,.4)}
 .fb-path{font-family:"SF Mono","Fira Code",monospace;font-size:12px;color:var(--cf-text);font-weight:500}
 .fb-count{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted)}
-#file-tree{overflow-y:auto;max-height:540px;min-height:200px}
+#file-tree{overflow-y:auto;max-height:460px;min-height:240px}
 .tree-row{display:flex;align-items:center;gap:8px;padding:8px 13px;border-bottom:1px solid rgba(235,213,193,.18);font-size:13px;cursor:pointer;transition:background .08s;position:relative}
 .tree-row:last-child{border-bottom:none}
 .tree-row:hover{background:var(--cf-bg-hover)}
@@ -710,16 +710,16 @@ tr:hover td{background:var(--cf-bg-hover)}
 .tree-del{background:none;border:none;color:var(--cf-error);padding:1px 6px;opacity:0;cursor:pointer;font-size:15px;line-height:1;border-radius:3px;flex-shrink:0}
 .tree-row:hover .tree-del{opacity:.7}
 .tree-del:hover{opacity:1!important;background:rgba(220,38,38,.08)}
-.fb-right{display:flex;flex-direction:column;gap:12px}
+.tree-url{background:none;border:none;color:var(--cf-text-subtle);padding:1px 4px;opacity:0;cursor:pointer;font-size:13px;line-height:1;border-radius:3px;flex-shrink:0;text-decoration:none;display:inline-flex;align-items:center}
+.tree-row:hover .tree-url{opacity:.6}
+.tree-url:hover{opacity:1!important;color:var(--cf-orange)!important;background:rgba(255,72,1,.08)}
+.fb-bottom{display:flex;flex-direction:row;gap:12px;align-items:flex-start}
+.fb-bottom>.fb-action{flex:1;min-width:0}
+.fb-bottom>.fb-action:last-child{flex:2}
 .fb-action{background:var(--cf-bg-card);border:1px solid var(--cf-border);padding:14px 15px}
 .fb-action-row{display:flex;gap:8px;align-items:flex-end}
 .viewer-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted);margin-bottom:5px}
-.viewer-filepath{font-family:"SF Mono","Fira Code",monospace;font-size:11px;color:var(--cf-text-subtle);margin-bottom:5px;min-height:14px}
-.viewer-url-bar{display:flex;align-items:center;gap:8px;margin-bottom:6px;padding:6px 9px;background:rgba(255,72,1,.05);border:1px solid rgba(255,72,1,.2);border-radius:4px;overflow:hidden}
-.viewer-url-link{font-family:"SF Mono","Fira Code",monospace;font-size:11px;color:var(--cf-orange);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none}
-.viewer-url-link:hover{text-decoration:underline}
-#open-url-btn{display:inline-flex;align-items:center;padding:3px 9px;border-radius:9999px;font-size:11px;font-weight:500;border:1px solid rgba(255,72,1,.3);background:transparent;color:var(--cf-orange);cursor:pointer;text-decoration:none;white-space:nowrap;font-family:inherit;line-height:1.4}
-#open-url-btn:hover{background:rgba(255,72,1,.08)}
+.viewer-filepath{font-family:"SF Mono","Fira Code",monospace;font-size:11px;color:var(--cf-text-subtle);margin-bottom:6px;min-height:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .file-viewer{background:#1C0A00;color:#f5e6d3;font-family:"SF Mono","Fira Code",monospace;font-size:12px;line-height:1.5;padding:13px 14px;min-height:160px;max-height:320px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;border:1px solid #3a1500}
 .toast{position:fixed;bottom:18px;right:20px;background:var(--cf-text);color:var(--cf-bg);padding:8px 16px;border-radius:9999px;font-size:12px;font-weight:500;opacity:0;transition:opacity .2s;pointer-events:none;z-index:500}
 .toast.show{opacity:1}
@@ -813,7 +813,7 @@ tr:hover td{background:var(--cf-bg-hover)}
           </div>
           <div id="file-tree"><div class="empty">Select a workspace and click Load Files.</div></div>
         </div>
-        <div class="fb-right">
+        <div class="fb-bottom">
           <div class="fb-action">
             <div class="fb-action-row">
               <div class="form-field"><label>Create Directory</label><input id="mkdir-path" placeholder="/new-folder"></div>
@@ -829,11 +829,6 @@ tr:hover td{background:var(--cf-bg-hover)}
           <div class="fb-action">
             <div class="viewer-lbl">File Content</div>
             <div class="viewer-filepath" id="viewer-path">Click a file to view its contents</div>
-            <div class="viewer-url-bar" id="viewer-url-bar" style="display:none">
-              <a class="viewer-url-link" id="viewer-url-link" href="#" target="_blank" rel="noopener"></a>
-              <button class="sm" id="copy-url-btn" title="Copy URL">Copy URL</button>
-              <a class="sm" id="open-url-btn" href="#" target="_blank" rel="noopener">Open &nearr;</a>
-            </div>
             <div class="file-viewer" id="file-viewer">Click a file to view its contents, or use the actions above to create files and directories.</div>
           </div>
         </div>
@@ -930,18 +925,18 @@ function toolCard(t,type){
 }
 async function deleteGlobalTool(name){if(!confirm('Delete global tool "'+name+'"?'))return;var res=await api('/global-tools?name='+encodeURIComponent(name),{method:'DELETE'});if(res&&res.ok){toast('Tool deleted');loadTools();}else toast('Error',false);}
 async function populateWsSel(selectEmail){var sel=document.getElementById('ws-sel');var cur=selectEmail||sel.value||bWs;var res=await api('/users');if(!res)return;var users=await res.json();var opts='<option value="shared">Shared Workspace</option>';users.forEach(function(u){opts+='<option value="'+esc(u.email)+'">'+esc(u.email)+'</option>';});sel.innerHTML=opts;sel.value=cur;bWs=sel.value;}
-async function loadBrowserFiles(){var ws=document.getElementById('ws-sel').value||'shared';bWs=ws;bFiles=[];document.getElementById('file-tree').innerHTML='<div class="empty">Loading&hellip;</div>';var res=await api('/files?workspace='+encodeURIComponent(ws));if(!res)return;bFiles=await res.json();renderTree();}
+async function loadBrowserFiles(){var ws=document.getElementById('ws-sel').value||'shared';bWs=ws;bFiles=[];resetViewer();document.getElementById('file-tree').innerHTML='<div class="empty">Loading\u2026</div>';var res=await api('/files?workspace='+encodeURIComponent(ws));if(!res)return;bFiles=await res.json();renderTree();}
 function listDir(){var prefix=bPath==='/'?'/':bPath+'/';var seen=new Set(),dirs=[],files=[];bFiles.forEach(function(f){if(!f.path.startsWith(prefix))return;var rest=f.path.slice(prefix.length);if(!rest)return;var slash=rest.indexOf('/');if(slash===-1){if(!f.path.endsWith('/.keep'))files.push(f);}else{var d=rest.slice(0,slash);if(!seen.has(d)){seen.add(d);dirs.push(d);}}});return{dirs:dirs.sort(),files:files.sort(function(a,b){return a.path.localeCompare(b.path);})};}
-function renderTree(){var info=listDir();var all=info.dirs.length+info.files.length;document.getElementById('fb-path').textContent=bPath;document.getElementById('fb-count').textContent=all+' ITEM'+(all!==1?'S':'');var html='';if(bPath!=='/')html+='<div class="tree-row" data-type="up"><span style="font-size:12px;color:var(--cf-text-muted)">&#8593;</span><span class="tree-name">..</span></div>';info.dirs.forEach(function(d){var dp=(bPath==='/'?'':bPath)+'/'+d;html+='<div class="tree-row" data-type="dir" data-path="'+esc(dp)+'"><span style="font-size:14px">&#128193;</span><span class="tree-name">'+esc(d)+'/</span></div>';});info.files.forEach(function(f){var name=f.path.split('/').pop();var sz=f.size<1024?f.size+' B':(f.size<1048576?Math.round(f.size/1024)+' KB':Math.round(f.size/1048576)+' MB');html+='<div class="tree-row" data-type="file" data-path="'+esc(f.path)+'"><span style="font-size:14px">&#128196;</span><span class="tree-name">'+esc(name)+'</span><span class="tree-size">'+sz+'</span><button class="tree-del" data-path="'+esc(f.path)+'" title="Delete">&#215;</button></div>';});if(!html)html='<div class="empty" style="padding:20px">Empty directory</div>';document.getElementById('file-tree').innerHTML=html;}
-document.getElementById('file-tree').addEventListener('click',function(e){var del=e.target.closest('.tree-del');if(del){e.stopPropagation();delFile(del.dataset.path);return;}var row=e.target.closest('.tree-row');if(!row)return;var type=row.dataset.type;if(type==='up'){var parts=bPath.split('/').filter(Boolean);parts.pop();bPath=parts.length?'/'+parts.join('/'):'/';;renderTree();}else if(type==='dir'){bPath=row.dataset.path;renderTree();}else if(type==='file'){viewFile(row.dataset.path);document.querySelectorAll('.tree-row').forEach(function(r){r.classList.remove('selected');});row.classList.add('selected');}});
+function renderTree(){var info=listDir();var all=info.dirs.length+info.files.length;document.getElementById('fb-path').textContent=bPath;document.getElementById('fb-count').textContent=all+' ITEM'+(all!==1?'S':'');var html='';if(bPath!=='/')html+='<div class="tree-row" data-type="up"><span style="font-size:12px;color:var(--cf-text-muted)">&#8593;</span><span class="tree-name">..</span></div>';info.dirs.forEach(function(d){var dp=(bPath==='/'?'':bPath)+'/'+d;html+='<div class="tree-row" data-type="dir" data-path="'+esc(dp)+'"><span style="font-size:14px">&#128193;</span><span class="tree-name">'+esc(d)+'/</span></div>';});info.files.forEach(function(f){var name=f.path.split('/').pop();var sz=f.size<1024?f.size+' B':(f.size<1048576?Math.round(f.size/1024)+' KB':Math.round(f.size/1048576)+' MB');var vu=getViewUrl(f.path);html+='<div class="tree-row" data-type="file" data-path="'+esc(f.path)+'"><span style="font-size:14px">&#128196;</span><span class="tree-name">'+esc(name)+'</span><span class="tree-size">'+sz+'</span><a class="tree-url" href="'+esc(vu)+'" target="_blank" rel="noopener" title="Open in browser">&#128279;</a><button class="tree-del" data-path="'+esc(f.path)+'" title="Delete">&#215;</button></div>';});if(!html)html='<div class="empty" style="padding:20px">Empty directory</div>';document.getElementById('file-tree').innerHTML=html;}
+document.getElementById('file-tree').addEventListener('click',function(e){if(e.target.closest('.tree-url'))return;var del=e.target.closest('.tree-del');if(del){e.stopPropagation();delFile(del.dataset.path);return;}var row=e.target.closest('.tree-row');if(!row)return;var type=row.dataset.type;if(type==='up'){var parts=bPath.split('/').filter(Boolean);parts.pop();bPath=parts.length?'/'+parts.join('/'):'/';;renderTree();}else if(type==='dir'){bPath=row.dataset.path;renderTree();}else if(type==='file'){viewFile(row.dataset.path);document.querySelectorAll('.tree-row').forEach(function(r){r.classList.remove('selected');});row.classList.add('selected');}});
 function getViewUrl(path){var base=window.location.origin;if(bWs==='shared')return base+'/view?shared=true&file='+encodeURIComponent(path);return base+'/view?user='+encodeURIComponent(bWs)+'&file='+encodeURIComponent(path);}
-async function viewFile(path){document.getElementById('viewer-path').textContent=path;document.getElementById('file-viewer').textContent='Loading…';var url=getViewUrl(path);var bar=document.getElementById('viewer-url-bar');var lnk=document.getElementById('viewer-url-link');var openBtn=document.getElementById('open-url-btn');bar.style.display='flex';lnk.href=url;lnk.textContent=url;openBtn.href=url;var res=await api('/files/read?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path));if(!res)return;var content=await res.text();document.getElementById('file-viewer').textContent=content;document.getElementById('write-path').value=path;document.getElementById('write-content').value=content;}
+function resetViewer(){document.getElementById('viewer-path').textContent='Click a file to view its contents';document.getElementById('file-viewer').textContent='Click a file to view its contents, or use the actions above to create files and directories.';}
+async function viewFile(path){document.getElementById('viewer-path').textContent=path;document.getElementById('file-viewer').textContent='Loading\u2026';var res=await api('/files/read?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path));if(!res)return;var content=await res.text();document.getElementById('file-viewer').textContent=content;document.getElementById('write-path').value=path;document.getElementById('write-content').value=content;}
 async function delFile(path){if(!confirm('Delete '+path+'?'))return;var res=await api('/files?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path),{method:'DELETE'});if(res&&res.ok){toast('Deleted');bFiles=bFiles.filter(function(f){return f.path!==path;});renderTree();}else toast('Delete failed',false);}
 document.getElementById('mkdir-btn').addEventListener('click',async function(){var path=document.getElementById('mkdir-path').value.trim();if(!path)return;var res=await api('/files/mkdir?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path),{method:'POST'});if(res&&res.ok){toast('Directory created');document.getElementById('mkdir-path').value='';loadBrowserFiles();}else toast('mkdir failed',false);});
 document.getElementById('write-btn').addEventListener('click',async function(){var path=document.getElementById('write-path').value.trim();var content=document.getElementById('write-content').value;if(!path)return;var res=await api('/files/write?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path),{method:'POST',headers:{'Content-Type':'text/plain'},body:content});if(res&&res.ok){toast('File written');loadBrowserFiles();}else toast('Write failed',false);});
-document.getElementById('copy-url-btn').addEventListener('click',function(){var url=document.getElementById('viewer-url-link').href;navigator.clipboard.writeText(url).then(function(){toast('URL copied');},function(){toast('Copy failed',false);});});
 document.getElementById('load-files-btn').addEventListener('click',function(){bPath='/';loadBrowserFiles();});
-document.getElementById('ws-sel').addEventListener('change',function(){bWs=this.value;bPath='/';bFiles=[];document.getElementById('file-tree').innerHTML='<div class="empty">Click Load Files.</div>';document.getElementById('fb-path').textContent='/';document.getElementById('fb-count').textContent='&mdash;';});
+document.getElementById('ws-sel').addEventListener('change',function(){bWs=this.value;bPath='/';bFiles=[];resetViewer();document.getElementById('file-tree').innerHTML='<div class="empty">Click Load Files.</div>';document.getElementById('fb-path').textContent='/';document.getElementById('fb-count').textContent='&mdash;';});
 window.addEventListener('load',function(){var s=sessionStorage.getItem('adminKey');if(s){document.getElementById('admin-key').value=s;authenticate();}});
 document.getElementById('admin-key').addEventListener('keydown',function(e){if(e.key==='Enter')authenticate();});
 document.getElementById('unlock-btn').addEventListener('click',authenticate);
