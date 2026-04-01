@@ -720,7 +720,7 @@ tr:hover td{background:var(--cf-bg-hover)}
 .file-viewer{background:#1C0A00;color:#f5e6d3;font-family:"SF Mono","Fira Code",monospace;font-size:12px;line-height:1.5;padding:13px 14px;min-height:160px;max-height:320px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;border:1px solid #3a1500}
 .toast{position:fixed;bottom:18px;right:20px;background:var(--cf-text);color:var(--cf-bg);padding:8px 16px;border-radius:9999px;font-size:12px;font-weight:500;opacity:0;transition:opacity .2s;pointer-events:none;z-index:500}
 .toast.show{opacity:1}
-.file-editor-ta{background:#1C0A00;color:#f5e6d3;font-family:"SF Mono","Fira Code",monospace;font-size:12px;line-height:1.5;padding:13px 14px;min-height:300px;max-height:500px;overflow-y:auto;resize:vertical;width:100%;outline:none;border:1px solid #3a1500;display:block;border-radius:0}
+.file-editor-ta{background:#1C0A00;color:#f5e6d3;font-family:"SF Mono","Fira Code",monospace;font-size:12px;line-height:1.5;padding:13px 14px;min-height:540px;max-height:80vh;overflow-y:auto;resize:vertical;width:100%;outline:none;border:1px solid #3a1500;display:block;border-radius:0}
 .file-editor-ta:focus{border-color:var(--cf-orange)}
 </style>
 </head>
