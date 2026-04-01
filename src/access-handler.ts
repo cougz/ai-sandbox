@@ -14,6 +14,8 @@ import {
   validateCSRFToken,
   validateOAuthState,
 } from "./workers-oauth-utils";
+import { buildBuiltinToolDefs } from "./tool-defs";
+import { domainTools } from "./tools/example";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -25,124 +27,11 @@ interface UserRecord {
   createdAt: string;
 }
 
-// ─── Built-in tool definitions (mirrors BUILTIN_TOOL_DEFS in agent.ts) ──────
-// Kept here so /admin/api/tools can be served from the stateless Worker
-// without routing through a DO stub (which is unreliable for cold starts).
+// ─── Built-in tool definitions ────────────────────────────────────────────────
+// Single source of truth lives in ./tool-defs.ts.  Both agent.ts and this file
+// derive their copies from the same function — no manual sync required.
 
-const ADMIN_BUILTIN_TOOLS = [
-  {
-    name: "run_code",
-    description: [
-      "Execute JavaScript code in an isolated V8 sandbox (~2ms startup, no network).",
-      "",
-      "Available in sandbox:",
-      "  state.*     — your personal workspace: readFile, writeFile, glob, searchFiles,",
-      "                replaceInFiles, diff, readJson, writeJson, walkTree, ...",
-      "  shared.*    — team shared workspace: same API as state.*, readable and writable by all users.",
-      "                Use this to access shared templates, configs, and team resources.",
-      "  codemode.*  — domain tools: kvGet, kvSet, kvList, kvDelete",
-      "  gitprism.*  — ingest_repo({ url, detail? })",
-      "                Converts a public GitHub repo to Markdown.",
-      "                detail: 'summary' | 'structure' | 'file-list' | 'full'",
-      "",
-      "Files written via state.* persist in your personal workspace.",
-      "Files written via shared.* are immediately visible to all team members.",
-      "The code must be an async arrow function or a block of statements.",
-    ].join("\n"),
-    params: [
-      { name: "code", type: "string", description: "JavaScript to run. Can use state.*, shared.*, codemode.*, and gitprism.*", required: true },
-    ],
-  },
-  {
-    name: "run_bundled_code",
-    description: [
-      "Like run_code, but installs npm packages at runtime so the sandbox can import them.",
-      "Prefer run_code for simple tasks — it's much faster.",
-      "Use dynamic import(): const { chunk } = await import('lodash');",
-      "state.*, shared.*, codemode.*, and gitprism.* are available exactly as in run_code.",
-    ].join("\n"),
-    params: [
-      { name: "code",     type: "string", description: "JavaScript to run. Use dynamic import() to load declared packages.", required: true },
-      { name: "packages", type: "object", description: "npm packages: { name: versionRange }", required: false },
-    ],
-  },
-  {
-    name: "get_report_url",
-    description: [
-      "Get a shareable browser URL for a file written to your personal workspace.",
-      "Use this after generating an HTML report with run_code.",
-      "The URL is stable — tied to your identity, not the current session.",
-    ].join("\n"),
-    params: [
-      { name: "file", type: "string", description: "Workspace path, e.g. /reports/dashboard.html", required: false },
-    ],
-  },
-  {
-    name: "get_shared_file_url",
-    description: [
-      "Get a shareable browser URL for a file in the team shared workspace.",
-      "Use this to share links to team templates or reports stored in the shared workspace.",
-      "The URL is stable and accessible to anyone with the link.",
-    ].join("\n"),
-    params: [
-      { name: "file", type: "string", description: "Shared workspace path, e.g. /templates/cf-report.html", required: true },
-    ],
-  },
-  {
-    name: "tool_create",
-    description: [
-      "Create or update a reusable custom MCP tool in your personal workspace.",
-      "The tool is saved to /tools/{name}/tool.json (directory format — new standard).",
-      "It will be auto-loaded at the start of every future session.",
-      "",
-      "Tool layout (directory format):",
-      "  /tools/{name}/tool.json   ← required: tool definition",
-      "  /tools/{name}/README.md   ← optional: usage docs",
-      "  /tools/{name}/*.html      ← optional: HTML templates",
-      "  /tools/{name}/*.md        ← optional: reference data",
-      "",
-      "Schema format: { fieldName: { type, description?, optional? } }",
-      "  type: 'string' | 'number' | 'boolean' | 'array' | 'object'",
-      "",
-      "Code: an async arrow function with access to state.*, shared.*, codemode.*, gitprism.*",
-    ].join("\n"),
-    params: [
-      { name: "name",        type: "string", description: "Tool name — lowercase letters, digits, and underscores only", required: true },
-      { name: "description", type: "string", description: "What the tool does — shown to the AI in every session",        required: true },
-      { name: "schema",      type: "object", description: "Parameter schema — omit or pass {} for no-arg tools",          required: false },
-      { name: "code",        type: "string", description: "Async arrow function, e.g. async ({ arg1 }) => { ... }",       required: true },
-    ],
-  },
-  {
-    name: "tool_list",
-    description: [
-      "List all available MCP tools — built-in tools and your custom tools.",
-      "Scans /tools/{name}/tool.json (directory format) and /tools/{name}.json (flat format).",
-    ].join("\n"),
-    params: [],
-  },
-  {
-    name: "tool_delete",
-    description: [
-      "Delete a custom tool from your personal workspace.",
-      "Tries /tools/{name}/tool.json (directory format) then /tools/{name}.json (flat format).",
-      "The tool remains callable for the rest of this session but will not load in future sessions.",
-    ].join("\n"),
-    params: [
-      { name: "name", type: "string", description: "Name of the custom tool to delete", required: true },
-    ],
-  },
-  {
-    name: "tool_reload",
-    description: [
-      "Reload custom tools from /tools/ in your workspace.",
-      "Scans /tools/{name}/tool.json (directory format) and /tools/{name}.json (flat format).",
-      "Use this after writing tool files manually via run_code to register them",
-      "in the current session without starting a new one.",
-    ].join("\n"),
-    params: [],
-  },
-];
+const ADMIN_BUILTIN_TOOLS = buildBuiltinToolDefs(Object.keys(domainTools));
 
 // ─── Content types for /view ──────────────────────────────────────────────────
 

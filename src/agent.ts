@@ -10,6 +10,7 @@ import { createWorker } from "@cloudflare/worker-bundler";
 import { z } from "zod";
 import { domainTools } from "./tools/example";
 import { handleRequest, emailToNamespace, SHARED_NAMESPACE } from "./access-handler";
+import { buildBuiltinToolDefs } from "./tool-defs";
 import type { Props } from "./workers-oauth-utils";
 
 // ─── Env ──────────────────────────────────────────────────────────────────────
@@ -78,8 +79,9 @@ function makeGitprismProvider() {
       ingest_repo: {
         description: [
           "Convert any public GitHub repository into LLM-ready Markdown.",
-          "Args: { url: string (GitHub URL or owner/repo shorthand),",
-          "        detail?: 'summary' | 'structure' | 'file-list' | 'full' (default: 'full') }",
+          "Params: { url: string, detail?: 'summary' | 'structure' | 'file-list' | 'full' }",
+          "  url    — full GitHub URL (https://github.com/org/repo) or owner/repo shorthand.",
+          "  detail — level of detail to return (default: 'full').",
         ].join("\n"),
         execute: async (args: unknown) => {
           const { url, detail = "full" } = args as { url: string; detail?: string };
@@ -102,112 +104,13 @@ function makeGitprismProvider() {
 const domainProvider = { tools: domainTools } as const;
 
 // ─── Built-in Tool Registry (served to admin panel via DO /internal/tools) ───
+// Single source of truth lives in ./tool-defs.ts — both agent.ts and
+// access-handler.ts derive their copies from the same function.
 
-export const BUILTIN_TOOL_DEFS = [
-  {
-    name: "run_code",
-    description: [
-      "Execute JavaScript code in an isolated V8 sandbox (~2ms startup, no network).",
-      "",
-      "Available in sandbox:",
-      "  state.*     — your personal workspace: readFile, writeFile, glob, searchFiles,",
-      "                replaceInFiles, diff, readJson, writeJson, walkTree, ...",
-      "  shared.*    — team shared workspace: same API as state.*, readable and writable by all users.",
-      "                Use this to access shared templates, configs, and team resources.",
-      "  codemode.*  — domain tools: " + Object.keys(domainTools).join(", "),
-      "  gitprism.*  — ingest_repo({ url, detail? })",
-      "                Converts a public GitHub repo to Markdown.",
-      "                detail: 'summary' | 'structure' | 'file-list' | 'full'",
-      "",
-      "Files written via state.* persist in your personal workspace.",
-      "Files written via shared.* are immediately visible to all team members.",
-      "The code must be an async arrow function or a block of statements.",
-    ].join("\n"),
-    params: [
-      { name: "code", type: "string", description: "JavaScript to run. Can use state.*, shared.*, codemode.*, and gitprism.*", required: true },
-    ],
-  },
-  {
-    name: "run_bundled_code",
-    description: [
-      "Like run_code, but installs npm packages at runtime so the sandbox can import them.",
-      "Prefer run_code for simple tasks — it's much faster.",
-      "Use dynamic import(): const { chunk } = await import('lodash');",
-      "state.*, shared.*, codemode.*, and gitprism.* are available exactly as in run_code.",
-    ].join("\n"),
-    params: [
-      { name: "code",     type: "string", description: "JavaScript to run. Use dynamic import() to load declared packages.", required: true },
-      { name: "packages", type: "object", description: "npm packages: { name: versionRange }", required: false },
-    ],
-  },
-  {
-    name: "get_report_url",
-    description: [
-      "Get a shareable browser URL for a file written to your personal workspace.",
-      "Use this after generating an HTML report with run_code.",
-      "The URL is stable — tied to your identity, not the current session.",
-    ].join("\n"),
-    params: [
-      { name: "file", type: "string", description: "Workspace path, e.g. /reports/dashboard.html", required: false },
-    ],
-  },
-  {
-    name: "get_shared_file_url",
-    description: [
-      "Get a shareable browser URL for a file in the team shared workspace.",
-      "Use this to share links to team templates or reports stored in the shared workspace.",
-      "The URL is stable and accessible to anyone with the link.",
-    ].join("\n"),
-    params: [
-      { name: "file", type: "string", description: "Shared workspace path, e.g. /templates/cf-report.html", required: true },
-    ],
-  },
-  {
-    name: "tool_create",
-    description: [
-      "Create or update a reusable custom MCP tool in your personal workspace.",
-      "The tool is saved to /tools/{name}.json and registered immediately in this session.",
-      "It will be auto-loaded at the start of every future session.",
-      "",
-      "Schema format: { fieldName: { type, description?, optional? } }",
-      "  type: 'string' | 'number' | 'boolean' | 'array' | 'object'",
-      "",
-      "Code: an async arrow function receiving the tool args as an object.",
-      "  It has access to state.*, shared.*, codemode.*, gitprism.* — same as run_code.",
-    ].join("\n"),
-    params: [
-      { name: "name",        type: "string", description: "Tool name — lowercase letters, digits, and underscores only", required: true },
-      { name: "description", type: "string", description: "What the tool does — shown to the AI in every session",         required: true },
-      { name: "schema",      type: "object", description: "Parameter schema — omit or pass {} for tools with no arguments", required: false },
-      { name: "code",        type: "string", description: "Async arrow function, e.g. async ({ arg1, arg2 }) => { ... }",  required: true },
-    ],
-  },
-  {
-    name: "tool_list",
-    description: "List all available MCP tools — built-in tools and your custom tools loaded from /tools/*.json.",
-    params: [],
-  },
-  {
-    name: "tool_delete",
-    description: [
-      "Delete a custom tool from your workspace.",
-      "The /tools/{name}.json file is removed immediately.",
-      "The tool remains callable for the rest of this session but will not load in future sessions.",
-    ].join("\n"),
-    params: [
-      { name: "name", type: "string", description: "Name of the custom tool to delete", required: true },
-    ],
-  },
-  {
-    name: "tool_reload",
-    description: [
-      "Reload custom tools from /tools/*.json in your workspace.",
-      "Use this after writing tool files manually via run_code to register them",
-      "in the current session without starting a new one.",
-    ].join("\n"),
-    params: [],
-  },
-];
+export const BUILTIN_TOOL_DEFS = buildBuiltinToolDefs(Object.keys(domainTools));
+
+// Quick lookup so runtime tool registrations reuse the canonical description.
+const toolDesc = Object.fromEntries(BUILTIN_TOOL_DEFS.map(t => [t.name, t.description]));
 
 // ─── SandboxAgent ─────────────────────────────────────────────────────────────
 // One DO instance per MCP session.
@@ -369,26 +272,14 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
   }
 
   async init() {
+    // All tool descriptions come from the single source of truth in tool-defs.ts
+    // via the module-level `toolDesc` lookup.  Zod param descriptions are kept
+    // in sync with the canonical params defined there.
+
     // ── run_code ──────────────────────────────────────────────────────────────
     this.server.tool(
       "run_code",
-      [
-        "Execute JavaScript code in an isolated V8 sandbox (~2ms startup, no network).",
-        "",
-        "Available in sandbox:",
-        "  state.*     — your personal workspace: readFile, writeFile, glob, searchFiles,",
-        "                replaceInFiles, diff, readJson, writeJson, walkTree, ...",
-        "  shared.*    — team shared workspace: same API as state.*, readable and writable by all users.",
-        "                Use this to access shared templates, configs, and team resources.",
-        "  codemode.*  — domain tools: " + Object.keys(domainTools).join(", "),
-        "  gitprism.*  — ingest_repo({ url, detail? })",
-        "                Converts a public GitHub repo to Markdown.",
-        "                detail: 'summary' | 'structure' | 'file-list' | 'full'",
-        "",
-        "Files written via state.* persist in your personal workspace.",
-        "Files written via shared.* are immediately visible to all team members.",
-        "The code must be an async arrow function or a block of statements.",
-      ].join("\n"),
+      toolDesc["run_code"],
       { code: z.string().describe("JavaScript to run. Can use state.*, shared.*, codemode.*, and gitprism.*") },
       async ({ code }) => {
         const executor = new DynamicWorkerExecutor({ loader: this.env.LOADER, globalOutbound: null });
@@ -400,15 +291,12 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // ── run_bundled_code ──────────────────────────────────────────────────────
     this.server.tool(
       "run_bundled_code",
-      [
-        "Like run_code, but installs npm packages at runtime so the sandbox can import them.",
-        "Prefer run_code for simple tasks — it's much faster.",
-        "Use dynamic import(): const { chunk } = await import('lodash');",
-        "state.*, shared.*, codemode.*, and gitprism.* are available exactly as in run_code.",
-      ].join("\n"),
+      toolDesc["run_bundled_code"],
       {
         code: z.string().describe("JavaScript to run. Use dynamic import() to load declared packages."),
-        packages: z.record(z.string()).optional().describe("npm packages: { name: versionRange }"),
+        packages: z.record(z.string()).optional().describe(
+          'Map of npm package names to semver ranges, e.g. { "lodash": "^4.17.0", "date-fns": "*" }. Keys are package names, values are version ranges.'
+        ),
       },
       async ({ code, packages }) => {
         const { modules: bundledModules } = await createWorker({
@@ -426,12 +314,8 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // ── get_report_url ────────────────────────────────────────────────────────
     this.server.tool(
       "get_report_url",
-      [
-        "Get a shareable browser URL for a file written to your personal workspace.",
-        "Use this after generating an HTML report with run_code.",
-        "The URL is stable — tied to your identity, not the current session.",
-      ].join("\n"),
-      { file: z.string().default("/reports/dashboard.html").describe("Workspace path, e.g. /reports/dashboard.html") },
+      toolDesc["get_report_url"],
+      { file: z.string().default("/reports/dashboard.html").describe("Workspace path, e.g. /reports/sales-q4.html") },
       async ({ file }) => {
         const base  = this.env.PUBLIC_URL.replace(/\/$/, "");
         const email = this.props?.email ?? "anonymous";
@@ -443,11 +327,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // ── get_shared_file_url ───────────────────────────────────────────────────
     this.server.tool(
       "get_shared_file_url",
-      [
-        "Get a shareable browser URL for a file in the team shared workspace.",
-        "Use this to share links to team templates or reports stored in the shared workspace.",
-        "The URL is stable and accessible to anyone with the link.",
-      ].join("\n"),
+      toolDesc["get_shared_file_url"],
       { file: z.string().describe("Shared workspace path, e.g. /templates/cf-report.html") },
       async ({ file }) => {
         const base = this.env.PUBLIC_URL.replace(/\/$/, "");
@@ -459,32 +339,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // ── tool_create ───────────────────────────────────────────────────────────
     this.server.tool(
       "tool_create",
-      [
-        "Create or update a reusable custom MCP tool in your personal workspace.",
-        "The tool is saved to /tools/{name}/tool.json and registered immediately in this session.",
-        "It will be auto-loaded at the start of every future session.",
-        "",
-        "Tool layout (directory format — new standard):",
-        "  /tools/{name}/tool.json   ← required: tool definition (this file)",
-        "  /tools/{name}/README.md   ← optional: usage docs",
-        "  /tools/{name}/*.html      ← optional: HTML templates",
-        "  /tools/{name}/*.md        ← optional: reference data / framework docs",
-        "",
-        "Schema format: { fieldName: { type, description?, optional? } }",
-        "  type: 'string' | 'number' | 'boolean' | 'array' | 'object'",
-        "",
-        "Code: an async arrow function receiving the tool args as an object.",
-        "  It has access to state.*, shared.*, codemode.*, gitprism.* — same as run_code.",
-        "",
-        "Example:",
-        "  name: 'render_cf_report'",
-        "  description: 'Render data into the Cloudflare HTML report template'",
-        "  schema: { title: { type: 'string' }, data: { type: 'object' } }",
-        "  code: 'async ({ title, data }) => {",
-        "    const tpl = await shared.readFile(\"/tools/render_cf_report/template.html\");",
-        "    return tpl.replace(\"{{title}}\", title).replace(\"{{data}}\", JSON.stringify(data));",
-        "  }'",
-      ].join("\n"),
+      toolDesc["tool_create"],
       {
         name:        z.string().regex(/^[a-z][a-z0-9_]*$/).describe("Tool name — lowercase letters, digits, and underscores only"),
         description: z.string().describe("What the tool does — shown to the AI in every session"),
@@ -509,10 +364,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // ── tool_list ─────────────────────────────────────────────────────────────
     this.server.tool(
       "tool_list",
-      [
-        "List all available MCP tools — built-in tools and your custom tools.",
-        "Scans /tools/{name}/tool.json (directory format) and /tools/{name}.json (flat format).",
-      ].join("\n"),
+      toolDesc["tool_list"],
       {},
       async () => {
         const builtIn = [
@@ -554,12 +406,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // ── tool_delete ───────────────────────────────────────────────────────────
     this.server.tool(
       "tool_delete",
-      [
-        "Delete a custom tool from your personal workspace.",
-        "Tries /tools/{name}/tool.json (directory format) then /tools/{name}.json (flat format).",
-        "The tool remains callable for the rest of this session but will not load in future sessions.",
-        "Note: only tool.json is deleted; other files in the tool directory are kept.",
-      ].join("\n"),
+      toolDesc["tool_delete"],
       { name: z.string().describe("Name of the custom tool to delete") },
       async ({ name }) => {
         const paths = [`/tools/${name}/tool.json`, `/tools/${name}.json`];
@@ -576,12 +423,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // ── tool_reload ───────────────────────────────────────────────────────────
     this.server.tool(
       "tool_reload",
-      [
-        "Reload custom tools from /tools/ in your workspace.",
-        "Scans /tools/{name}/tool.json (directory format) and /tools/{name}.json (flat format).",
-        "Use this after writing tool files manually via run_code to register them",
-        "in the current session without starting a new one.",
-      ].join("\n"),
+      toolDesc["tool_reload"],
       {},
       async () => {
         await this.loadUserTools();

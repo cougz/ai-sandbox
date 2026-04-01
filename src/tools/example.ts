@@ -28,7 +28,7 @@ export const domainTools = {
 
   kvGet: {
     description:
-      "Retrieve a stored value by key. Returns null if not found.",
+      "Retrieve a stored value by key. Returns null if not found. Params: { key: string }",
     execute: async ({ key }: { key: string }): Promise<string | null> => {
       // TODO: replace with your real data store
       // e.g. return env.MY_KV.get(key);
@@ -39,7 +39,7 @@ export const domainTools = {
 
   kvSet: {
     description:
-      "Store a string value under a key. Overwrites existing values.",
+      "Store a string value under a key. Overwrites existing values. Params: { key: string, value: string }",
     execute: async ({
       key,
       value,
@@ -55,7 +55,7 @@ export const domainTools = {
 
   kvList: {
     description:
-      "List all keys in the store, optionally filtered by prefix.",
+      "List all keys in the store, optionally filtered by prefix. Params: { prefix?: string }",
     execute: async ({
       prefix,
     }: {
@@ -69,7 +69,7 @@ export const domainTools = {
   },
 
   kvDelete: {
-    description: "Delete a key from the store. No-op if the key does not exist.",
+    description: "Delete a key from the store. No-op if the key does not exist. Params: { key: string }",
     execute: async ({ key }: { key: string }): Promise<void> => {
       // TODO: replace with your real data store
       console.log(`[kvDelete] key=${key}`);
