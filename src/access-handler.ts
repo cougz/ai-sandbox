@@ -462,10 +462,74 @@ async function handleAdminApi(request: Request, env: Env): Promise<Response> {
     }
   }
 
+  // ── GET /tools — list all tools via DO (built-in + custom from shared ws) ──
+  if (method === "GET" && path === "/tools") {
+    const id   = env.SandboxAgent.idFromName("__admin_tools__");
+    const stub = env.SandboxAgent.get(id);
+    return stub.fetch(new Request("http://do/internal/tools", {
+      headers: { "X-Admin-Key": env.ADMIN_SECRET ?? "" },
+    }));
+  }
+
+  // ── Unified file-browser endpoints ─────────────────────────────────────────
+
+  // GET /files?workspace=X  — list all files with sizes
+  if (method === "GET" && path === "/files") {
+    const wsName = url.searchParams.get("workspace");
+    if (!wsName) return jsonResp({ error: "Missing ?workspace=" }, 400);
+    const ws = wsName === "shared" ? makeSharedWorkspace(env) : makeWorkspace(wsName, env);
+    try {
+      const entries = await ws.glob("/**/*") as Array<{ path: string; type: string; size: number }>;
+      return jsonResp(entries.filter(e => e.type === "file").map(e => ({ path: e.path, size: e.size })));
+    } catch { return jsonResp([]); }
+  }
+
+  // GET /files/read?workspace=X&path=P  — read file content
+  if (method === "GET" && path === "/files/read") {
+    const wsName   = url.searchParams.get("workspace");
+    const filePath = url.searchParams.get("path");
+    if (!wsName || !filePath) return jsonResp({ error: "Missing params" }, 400);
+    const ws      = wsName === "shared" ? makeSharedWorkspace(env) : makeWorkspace(wsName, env);
+    const content = await ws.readFile(filePath);
+    if (content === null) return jsonResp({ error: "File not found" }, 404);
+    return new Response(content, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+  }
+
+  // POST /files/write?workspace=X&path=P  — write file (body = raw content)
+  if (method === "POST" && path === "/files/write") {
+    const wsName   = url.searchParams.get("workspace");
+    const filePath = url.searchParams.get("path");
+    if (!wsName || !filePath) return jsonResp({ error: "Missing params" }, 400);
+    const content = await request.text();
+    const ws = wsName === "shared" ? makeSharedWorkspace(env) : makeWorkspace(wsName, env);
+    await ws.writeFile(filePath, content);
+    return jsonResp({ written: filePath });
+  }
+
+  // POST /files/mkdir?workspace=X&path=P  — create directory (writes .keep placeholder)
+  if (method === "POST" && path === "/files/mkdir") {
+    const wsName  = url.searchParams.get("workspace");
+    const dirPath = url.searchParams.get("path");
+    if (!wsName || !dirPath) return jsonResp({ error: "Missing params" }, 400);
+    const ws = wsName === "shared" ? makeSharedWorkspace(env) : makeWorkspace(wsName, env);
+    await ws.writeFile(dirPath.replace(/\/*$/, "") + "/.keep", "");
+    return jsonResp({ created: dirPath });
+  }
+
+  // DELETE /files?workspace=X&path=P  — delete single file (all workspaces)
+  if (method === "DELETE" && path === "/files") {
+    const wsName   = url.searchParams.get("workspace");
+    const filePath = url.searchParams.get("path");
+    if (!wsName || !filePath) return jsonResp({ error: "Missing params" }, 400);
+    const ws = wsName === "shared" ? makeSharedWorkspace(env) : makeWorkspace(wsName, env);
+    try { await ws.rm(filePath); } catch (err) { return jsonResp({ error: String(err) }, 500); }
+    return jsonResp({ deleted: filePath });
+  }
+
   return jsonResp({ error: "Not found" }, 404);
 }
 
-// ─── Admin HTML dashboard ─────────────────────────────────────────────────────
+// ─── Admin HTML dashboard (sidebar-nav shell, 3 sections) ───────────────
 
 function adminDashboard(): Response {
   const html = `<!DOCTYPE html>
@@ -473,282 +537,240 @@ function adminDashboard(): Response {
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AI Sandbox — Admin</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 66 30'><path fill='%23FF4801' d='M52.688 13.028c-.22 0-.437.008-.654.015a.3.3 0 0 0-.102.024.37.37 0 0 0-.236.255l-.93 3.249c-.401 1.397-.252 2.687.422 3.634.618.876 1.646 1.39 2.894 1.45l5.045.306a.45.45 0 0 1 .435.41.5.5 0 0 1-.025.223.64.64 0 0 1-.547.426l-5.242.306c-2.848.132-5.912 2.456-6.987 5.29l-.378 1a.28.28 0 0 0 .248.382h18.054a.48.48 0 0 0 .464-.35c.32-1.153.482-2.344.48-3.54 0-7.22-5.79-13.072-12.933-13.072M44.807 29.578l.334-1.175c.402-1.397.253-2.687-.42-3.634-.62-.876-1.647-1.39-2.896-1.45l-23.665-.306a.47.47 0 0 1-.374-.199.5.5 0 0 1-.052-.434.64.64 0 0 1 .552-.426l23.886-.306c2.836-.131 5.9-2.456 6.975-5.29l1.362-3.6a.9.9 0 0 0 .04-.477C48.997 5.259 42.789 0 35.367 0c-6.842 0-12.647 4.462-14.73 10.665a6.92 6.92 0 0 0-4.911-1.374c-3.28.33-5.92 3.002-6.246 6.318a7.2 7.2 0 0 0 .18 2.472C4.3 18.241 0 22.679 0 28.133q0 .74.106 1.453a.46.46 0 0 0 .457.402h43.704a.57.57 0 0 0 .54-.418'/></svg>">
 <style>
 html{color-scheme:light}*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{--cf-orange:#FF4801;--cf-text:#521000;--cf-text-muted:rgba(82,16,0,0.7);--cf-text-subtle:rgba(82,16,0,0.4);--cf-bg:#FFFBF5;--cf-bg-card:#FFFDFB;--cf-bg-hover:#FEF7ED;--cf-border:#EBD5C1;--cf-success:#16A34A;--cf-error:#DC2626}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--cf-bg);color:var(--cf-text);line-height:1.6;-webkit-font-smoothing:antialiased}
-header{background:var(--cf-bg);height:60px;padding:0 32px;display:flex;align-items:center;justify-content:space-between;position:relative}
-header::after{content:"";position:absolute;bottom:0;left:0;right:0;height:1px;background-image:linear-gradient(to right,var(--cf-border) 50%,transparent 50%);background-size:12px 1px;background-repeat:repeat-x}
-.logo{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--cf-text)}
-.logo svg{height:26px;color:var(--cf-orange)}
-.logo-text{font-size:16px;font-weight:500;letter-spacing:-.02em}
-.logo-text span{color:var(--cf-text-muted);font-weight:400}
-.main{max-width:1100px;margin:0 auto;padding:40px 32px}
-.eyebrow{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--cf-text-muted);margin-bottom:8px}
-h1{font-size:28px;font-weight:500;letter-spacing:-.02em;margin-bottom:6px}
-h2{font-size:20px;font-weight:500;letter-spacing:-.02em;margin-bottom:6px}
-.subtitle{font-size:14px;color:var(--cf-text-muted);margin-bottom:40px}
-.section{margin-top:48px}
-.card{position:relative;background:var(--cf-bg-card);border:1px solid var(--cf-border);margin-bottom:24px}
-.cb{position:absolute;width:8px;height:8px;border:1px solid var(--cf-border);border-radius:1.5px;background:var(--cf-bg);z-index:2}
-.card-hdr{padding:14px 18px;border-bottom:1px solid rgba(235,213,193,.4);display:flex;align-items:center;justify-content:space-between}
-.card-hdr-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted)}
-.card-body{padding:20px 18px}
+:root{--cf-orange:#FF4801;--cf-text:#521000;--cf-text-muted:rgba(82,16,0,.7);--cf-text-subtle:rgba(82,16,0,.4);--cf-bg:#FFFBF5;--cf-bg-card:#FFFDFB;--cf-bg-hover:#FEF7ED;--cf-border:#EBD5C1;--cf-success:#16A34A;--cf-error:#DC2626}
+html,body{height:100%;overflow:hidden}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--cf-bg);color:var(--cf-text);line-height:1.5;-webkit-font-smoothing:antialiased}
+#auth-overlay{position:fixed;inset:0;background:var(--cf-bg);display:flex;align-items:center;justify-content:center;z-index:200}
+.auth-box{background:var(--cf-bg-card);border:1px solid var(--cf-border);padding:32px;width:360px}
+#app{display:none;height:100vh}
+.shell{display:flex;height:100vh}
+#sidebar{width:220px;min-width:220px;height:100vh;border-right:1px solid var(--cf-border);display:flex;flex-direction:column;background:var(--cf-bg)}
+.logo-area{padding:18px 16px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--cf-border)}
+.logo-svg{color:var(--cf-orange);height:26px;flex-shrink:0}
+.logo-eyebrow{font-size:9px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--cf-text-muted);line-height:1.2}
+.logo-name{font-size:15px;font-weight:500;color:var(--cf-text);letter-spacing:-.02em;line-height:1.2}
+nav{flex:1;padding:8px 0}
+.nav-item{display:flex;align-items:center;gap:9px;padding:9px 16px;cursor:pointer;font-size:13px;color:var(--cf-text-muted);border-left:2px solid transparent;transition:all .1s;user-select:none}
+.nav-item:hover{color:var(--cf-text);background:var(--cf-bg-hover)}
+.nav-item.active{color:var(--cf-orange);border-left-color:var(--cf-orange);background:rgba(255,72,1,.05);font-weight:500}
+.nav-num{font-size:10px;font-weight:700;color:var(--cf-text-subtle);min-width:18px}
+.nav-ico{width:14px;height:14px;flex-shrink:0}
+#main{flex:1;overflow-y:auto;height:100vh}
+.section{display:none;padding:36px 44px;max-width:1140px}
+.section.active{display:block}
+.sec-title{font-size:24px;font-weight:500;letter-spacing:-.02em;margin-bottom:4px}
+.sec-sub{font-size:13px;color:var(--cf-text-muted);margin-bottom:26px}
+.card{background:var(--cf-bg-card);border:1px solid var(--cf-border);margin-bottom:18px}
+.card-hdr{padding:11px 16px;border-bottom:1px solid rgba(235,213,193,.4);display:flex;align-items:center;justify-content:space-between}
+.card-hdr-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted)}
+.card-body{padding:16px}
+.form-row{display:flex;gap:8px;align-items:flex-end}
+.form-field{flex:1}
+label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted);margin-bottom:4px}
+input,select,textarea{border:1px solid var(--cf-border);background:var(--cf-bg-card);color:var(--cf-text);font-family:inherit;font-size:13px;border-radius:4px;padding:7px 10px;width:100%;outline:none;transition:border-color .15s}
+input:focus,select:focus,textarea:focus{border-color:var(--cf-orange)}
+textarea{resize:vertical;font-family:"SF Mono","Fira Code",monospace;font-size:12px;line-height:1.5}
+button{display:inline-flex;align-items:center;gap:5px;padding:6px 13px;border-radius:9999px;font-size:12px;font-weight:500;border:1px solid var(--cf-border);background:var(--cf-bg-card);color:var(--cf-text-muted);cursor:pointer;transition:all .12s;font-family:inherit;line-height:1.4;white-space:nowrap}
+button:hover{background:var(--cf-bg-hover);color:var(--cf-text)}
+button.primary{background:var(--cf-orange);color:#fff;border-color:transparent}
+button.primary:hover{opacity:.9}
+button.danger{color:var(--cf-error);border-color:rgba(220,38,38,.3)}
+button.danger:hover{background:rgba(220,38,38,.06)}
+button.sm{padding:3px 9px;font-size:11px}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{padding:8px 12px;text-align:left;font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--cf-text-muted);border-bottom:1px solid var(--cf-border);white-space:nowrap}
-td{padding:10px 12px;border-bottom:1px solid rgba(235,213,193,.3);vertical-align:middle;color:var(--cf-text-muted)}
-td strong{color:var(--cf-text);font-weight:500}tr:last-child td{border-bottom:none}tr:hover td{background:var(--cf-bg-hover)}
-.badge{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:10px;font-weight:600}
-.badge-g{background:rgba(22,163,74,.1);color:var(--cf-success)}.badge-m{background:rgba(235,213,193,.4);color:var(--cf-text-muted)}
-button{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:9999px;font-size:12px;font-weight:500;border:1px solid var(--cf-border);background:var(--cf-bg-card);color:var(--cf-text-muted);cursor:pointer;transition:all .15s;font-family:inherit}
-button:hover{background:var(--cf-bg-hover);color:var(--cf-text);border-style:dashed}
-button.danger{color:var(--cf-error);border-color:rgba(220,38,38,.3)}button.danger:hover{background:rgba(220,38,38,.05)}
-button.primary{background:var(--cf-orange);color:#fff;border-color:transparent}button.primary:hover{background:#e03d00;border-style:solid}
-input,textarea{border:1px solid var(--cf-border);background:var(--cf-bg-card);color:var(--cf-text);font-family:inherit;font-size:13px;border-radius:6px;padding:8px 12px;width:100%;outline:none;transition:border-color .15s}
-input:focus,textarea:focus{border-color:var(--cf-orange)}
-input[type=file]{padding:6px 10px;cursor:pointer}
-textarea{resize:vertical;min-height:120px;font-family:"SF Mono","Fira Code",monospace;font-size:12px}
-label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted);margin-bottom:5px}
-.form-row{margin-bottom:14px}
-.form-grid{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end}
-.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.files-panel{background:var(--cf-bg);border-top:1px solid rgba(235,213,193,.4);padding:12px 18px}
-.file-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(235,213,193,.2);font-size:12px}.file-row:last-child{border-bottom:none}
-.file-path{color:var(--cf-text);font-family:"SF Mono","Fira Code",monospace;font-size:11px}
-.file-size{color:var(--cf-text-subtle);font-size:10px;margin-left:8px}
-.file-link{color:var(--cf-orange);text-decoration:none;font-size:11px;font-weight:500}.file-link:hover{text-decoration:underline}
-#auth-overlay{position:fixed;inset:0;background:var(--cf-bg);display:flex;align-items:center;justify-content:center;z-index:100}
-.auth-box{background:var(--cf-bg-card);border:1px solid var(--cf-border);padding:32px;width:360px;position:relative}
-.toast{position:fixed;bottom:24px;right:24px;background:var(--cf-text);color:var(--cf-bg);padding:10px 18px;border-radius:9999px;font-size:13px;font-weight:500;opacity:0;transition:opacity .2s;pointer-events:none;z-index:200}.toast.show{opacity:1}
-.empty{padding:32px;text-align:center;color:var(--cf-text-subtle);font-size:13px}
-.divider{height:1px;background:var(--cf-border);margin:0 0 32px}
+th{padding:7px 12px;text-align:left;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--cf-text-muted);border-bottom:1px solid var(--cf-border);white-space:nowrap}
+td{padding:9px 12px;border-bottom:1px solid rgba(235,213,193,.25);vertical-align:middle;color:var(--cf-text-muted)}
+td strong{color:var(--cf-text);font-weight:500}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--cf-bg-hover)}
+.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:9999px;font-size:10px;font-weight:600}
+.badge-g{background:rgba(22,163,74,.1);color:var(--cf-success)}
+.badge-m{background:rgba(235,213,193,.4);color:var(--cf-text-muted)}
+.empty{padding:28px;text-align:center;color:var(--cf-text-subtle);font-size:13px}
+.tools-group{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--cf-text-muted);padding-bottom:8px;border-bottom:1px solid var(--cf-border);margin-bottom:12px;margin-top:24px}
+.tools-group:first-child{margin-top:0}
+.tool-card{border:1px solid var(--cf-border);background:var(--cf-bg-card);padding:14px 16px;margin-bottom:8px}
+.tool-card-hdr{display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap}
+.tool-name{font-family:"SF Mono","Fira Code",monospace;font-size:13px;font-weight:600;color:var(--cf-text);background:rgba(255,72,1,.06);padding:2px 8px;border-radius:4px;border:1px solid rgba(255,72,1,.15)}
+.tool-desc{font-size:12px;color:var(--cf-text-muted);line-height:1.55;white-space:pre-line;margin-bottom:6px}
+.params-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px;display:none}
+.params-tbl th{padding:4px 8px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--cf-text-subtle);border-bottom:1px solid var(--cf-border);text-align:left}
+.params-tbl td{padding:5px 8px;border-bottom:1px solid rgba(235,213,193,.2);color:var(--cf-text-muted);vertical-align:top}
+.params-tbl tr:last-child td{border-bottom:none}
+.params-tbl code{font-family:"SF Mono","Fira Code",monospace;font-size:11px;background:rgba(235,213,193,.35);padding:1px 4px;border-radius:3px}
+.ws-bar{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.ws-bar label{margin:0;white-space:nowrap}
+.file-browser{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.fb-left{border:1px solid var(--cf-border);background:var(--cf-bg-card);display:flex;flex-direction:column}
+.fb-hdr{display:flex;align-items:center;justify-content:space-between;padding:9px 13px;border-bottom:1px solid rgba(235,213,193,.4)}
+.fb-path{font-family:"SF Mono","Fira Code",monospace;font-size:12px;color:var(--cf-text);font-weight:500}
+.fb-count{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted)}
+#file-tree{overflow-y:auto;max-height:540px;min-height:200px}
+.tree-row{display:flex;align-items:center;gap:8px;padding:8px 13px;border-bottom:1px solid rgba(235,213,193,.18);font-size:13px;cursor:pointer;transition:background .08s;position:relative}
+.tree-row:last-child{border-bottom:none}
+.tree-row:hover{background:var(--cf-bg-hover)}
+.tree-row.selected{background:rgba(255,72,1,.06)}
+.tree-name{flex:1;font-family:"SF Mono","Fira Code",monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-size{font-size:10px;color:var(--cf-text-subtle);white-space:nowrap;margin-left:4px}
+.tree-del{background:none;border:none;color:var(--cf-error);padding:1px 6px;opacity:0;cursor:pointer;font-size:15px;line-height:1;border-radius:3px;flex-shrink:0}
+.tree-row:hover .tree-del{opacity:.7}
+.tree-del:hover{opacity:1!important;background:rgba(220,38,38,.08)}
+.fb-right{display:flex;flex-direction:column;gap:12px}
+.fb-action{background:var(--cf-bg-card);border:1px solid var(--cf-border);padding:14px 15px}
+.fb-action-row{display:flex;gap:8px;align-items:flex-end}
+.viewer-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted);margin-bottom:5px}
+.viewer-filepath{font-family:"SF Mono","Fira Code",monospace;font-size:11px;color:var(--cf-text-subtle);margin-bottom:5px;min-height:14px}
+.file-viewer{background:#1C0A00;color:#f5e6d3;font-family:"SF Mono","Fira Code",monospace;font-size:12px;line-height:1.5;padding:13px 14px;min-height:160px;max-height:320px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;border:1px solid #3a1500}
+.toast{position:fixed;bottom:18px;right:20px;background:var(--cf-text);color:var(--cf-bg);padding:8px 16px;border-radius:9999px;font-size:12px;font-weight:500;opacity:0;transition:opacity .2s;pointer-events:none;z-index:500}
+.toast.show{opacity:1}
 </style>
 </head>
 <body>
 <div id="auth-overlay">
   <div class="auth-box">
-    <div class="cb" style="top:-4px;left:-4px"></div><div class="cb" style="top:-4px;right:-4px"></div>
-    <div class="cb" style="bottom:-4px;left:-4px"></div><div class="cb" style="bottom:-4px;right:-4px"></div>
-    <div style="margin-bottom:16px"><div class="eyebrow">AI Sandbox Worker</div>
-      <div style="font-size:20px;font-weight:500;letter-spacing:-.02em">Admin Dashboard</div></div>
+    <div style="margin-bottom:20px">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--cf-text-muted);margin-bottom:5px">AI Sandbox Worker</div>
+      <div style="font-size:20px;font-weight:500;letter-spacing:-.02em">Admin Dashboard</div>
+    </div>
     <label for="admin-key">Admin Secret</label>
-    <input type="password" id="admin-key" placeholder="Enter ADMIN_SECRET" style="margin-bottom:16px">
-    <button class="primary" style="width:100%" onclick="authenticate()">Unlock</button>
-    <div id="auth-error" style="color:var(--cf-error);font-size:12px;margin-top:10px;display:none">Incorrect secret</div>
+    <input type="password" id="admin-key" placeholder="Enter ADMIN_SECRET" style="margin-bottom:14px">
+    <button class="primary" id="unlock-btn" style="width:100%">Unlock</button>
+    <div id="auth-error" style="color:var(--cf-error);font-size:12px;margin-top:8px;display:none">Incorrect secret</div>
   </div>
 </div>
-<header>
-  <a class="logo" href="#">
-    <svg viewBox="0 0 66 30" fill="currentColor"><path d="M52.688 13.028c-.22 0-.437.008-.654.015a.3.3 0 0 0-.102.024.37.37 0 0 0-.236.255l-.93 3.249c-.401 1.397-.252 2.687.422 3.634.618.876 1.646 1.39 2.894 1.45l5.045.306a.45.45 0 0 1 .435.41.5.5 0 0 1-.025.223.64.64 0 0 1-.547.426l-5.242.306c-2.848.132-5.912 2.456-6.987 5.29l-.378 1a.28.28 0 0 0 .248.382h18.054a.48.48 0 0 0 .464-.35c.32-1.153.482-2.344.48-3.54 0-7.22-5.79-13.072-12.933-13.072M44.807 29.578l.334-1.175c.402-1.397.253-2.687-.42-3.634-.62-.876-1.647-1.39-2.896-1.45l-23.665-.306a.47.47 0 0 1-.374-.199.5.5 0 0 1-.052-.434.64.64 0 0 1 .552-.426l23.886-.306c2.836-.131 5.9-2.456 6.975-5.29l1.362-3.6a.9.9 0 0 0 .04-.477C48.997 5.259 42.789 0 35.367 0c-6.842 0-12.647 4.462-14.73 10.665a6.92 6.92 0 0 0-4.911-1.374c-3.28.33-5.92 3.002-6.246 6.318a7.2 7.2 0 0 0 .18 2.472C4.3 18.241 0 22.679 0 28.133q0 .74.106 1.453a.46.46 0 0 0 .457.402h43.704a.57.57 0 0 0 .54-.418"/></svg>
-    <span class="logo-text">Cloudflare <span>Sandbox Admin</span></span>
-  </a>
-  <button onclick="loadAll()">↻ Refresh</button>
-</header>
-<div class="main">
-
-  <!-- ── Users ── -->
-  <div class="eyebrow">AI Sandbox Worker</div>
-  <h1>User Management</h1>
-  <p class="subtitle">Users appear automatically after their first Access login. Workspaces are persistent across sessions.</p>
-  <div class="card" id="users-card">
-    <div class="cb" style="top:-4px;left:-4px"></div><div class="cb" style="top:-4px;right:-4px"></div>
-    <div class="cb" style="bottom:-4px;left:-4px"></div><div class="cb" style="bottom:-4px;right:-4px"></div>
-    <div class="card-hdr"><span class="card-hdr-label">Users</span><span id="user-count" class="badge badge-m">—</span></div>
-    <div id="users-body"><div class="empty">Loading…</div></div>
-  </div>
-
-  <!-- ── Global Tools ── -->
-  <div class="section">
-    <div class="eyebrow">Team Resources</div>
-    <h2>Global Tools</h2>
-    <p class="subtitle" style="margin-bottom:24px">Tools in the shared workspace at <code style="font-family:monospace;font-size:12px;background:rgba(235,213,193,.4);padding:1px 5px;border-radius:3px">/tools/*.json</code> — auto-loaded for <strong>every user</strong> at session start. Personal tools override global tools with the same name.</p>
-    <div class="card" id="global-tools-card">
-      <div class="cb" style="top:-4px;left:-4px"></div><div class="cb" style="top:-4px;right:-4px"></div>
-      <div class="cb" style="bottom:-4px;left:-4px"></div><div class="cb" style="bottom:-4px;right:-4px"></div>
-      <div class="card-hdr">
-        <span class="card-hdr-label">Tools</span>
-        <div style="display:flex;gap:8px;align-items:center">
-          <span id="global-tools-count" class="badge badge-m">—</span>
-          <button onclick="loadGlobalTools()" style="padding:4px 12px;font-size:11px">↻ Refresh</button>
-        </div>
-      </div>
-      <div class="card-body" style="border-bottom:1px solid rgba(235,213,193,.4)">
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted);margin-bottom:14px">Add / Upload Global Tool</div>
-        <div class="upload-grid" style="margin-bottom:12px">
-          <div class="form-row" style="margin:0">
-            <label for="gt-name">Tool Name <span style="font-weight:400;text-transform:none;letter-spacing:0">(lowercase, underscores)</span></label>
-            <input type="text" id="gt-name" placeholder="my_tool">
-          </div>
-          <div class="form-row" style="margin:0">
-            <label for="gt-desc">Description</label>
-            <input type="text" id="gt-desc" placeholder="What this tool does">
-          </div>
-        </div>
-        <div class="form-row">
-          <label for="gt-schema">Schema <span style="font-weight:400;text-transform:none;letter-spacing:0">(JSON — omit for no-arg tools)</span></label>
-          <textarea id="gt-schema" style="min-height:60px" placeholder='{"input": {"type": "string", "description": "The input"}}'>{}</textarea>
-        </div>
-        <div class="form-row">
-          <label for="gt-code">Code <span style="font-weight:400;text-transform:none;letter-spacing:0">(async arrow function with access to state.*, shared.*, codemode.*)</span></label>
-          <textarea id="gt-code" placeholder="async ({ input }) => { return await shared.readFile(input); }"></textarea>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <button class="primary" onclick="uploadGlobalTool()">Add Global Tool</button>
-          <span id="gt-status" style="font-size:12px;color:var(--cf-text-muted)"></span>
-        </div>
-      </div>
-      <div id="global-tools-body"><div class="empty">Loading…</div></div>
+<div id="app"><div class="shell">
+  <aside id="sidebar">
+    <div class="logo-area">
+      <svg class="logo-svg" viewBox="0 0 66 30" fill="currentColor"><path d="M52.688 13.028c-.22 0-.437.008-.654.015a.3.3 0 0 0-.102.024.37.37 0 0 0-.236.255l-.93 3.249c-.401 1.397-.252 2.687.422 3.634.618.876 1.646 1.39 2.894 1.45l5.045.306a.45.45 0 0 1 .435.41.5.5 0 0 1-.025.223.64.64 0 0 1-.547.426l-5.242.306c-2.848.132-5.912 2.456-6.987 5.29l-.378 1a.28.28 0 0 0 .248.382h18.054a.48.48 0 0 0 .464-.35c.32-1.153.482-2.344.48-3.54 0-7.22-5.79-13.072-12.933-13.072M44.807 29.578l.334-1.175c.402-1.397.253-2.687-.42-3.634-.62-.876-1.647-1.39-2.896-1.45l-23.665-.306a.47.47 0 0 1-.374-.199.5.5 0 0 1-.052-.434.64.64 0 0 1 .552-.426l23.886-.306c2.836-.131 5.9-2.456 6.975-5.29l1.362-3.6a.9.9 0 0 0 .04-.477C48.997 5.259 42.789 0 35.367 0c-6.842 0-12.647 4.462-14.73 10.665a6.92 6.92 0 0 0-4.911-1.374c-3.28.33-5.92 3.002-6.246 6.318a7.2 7.2 0 0 0 .18 2.472C4.3 18.241 0 22.679 0 28.133q0 .74.106 1.453a.46.46 0 0 0 .457.402h43.704a.57.57 0 0 0 .54-.418"/></svg>
+      <div><div class="logo-eyebrow">Cloudflare</div><div class="logo-name">Sandbox Admin</div></div>
     </div>
-  </div>
-
-  <!-- ── Shared Workspace ── -->
-  <div class="section">
-    <div class="eyebrow">Team Resources</div>
-    <h2>Shared Workspace</h2>
-    <p class="subtitle" style="margin-bottom:24px">Files accessible to all team members via <code style="font-family:monospace;font-size:12px;background:rgba(235,213,193,.4);padding:1px 5px;border-radius:3px">shared.*</code> in the sandbox. Any logged-in user can read and write here.</p>
-    <div class="card" id="shared-card">
-      <div class="cb" style="top:-4px;left:-4px"></div><div class="cb" style="top:-4px;right:-4px"></div>
-      <div class="cb" style="bottom:-4px;left:-4px"></div><div class="cb" style="bottom:-4px;right:-4px"></div>
-      <div class="card-hdr">
-        <span class="card-hdr-label">Files</span>
-        <div style="display:flex;gap:8px;align-items:center">
-          <span id="shared-count" class="badge badge-m">—</span>
-          <button onclick="loadSharedFiles()" style="padding:4px 12px;font-size:11px">↻ Refresh</button>
+    <nav id="nav">
+      <div class="nav-item active" data-sec="users">
+        <span class="nav-num">01</span>
+        <svg class="nav-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="5" r="2.5"/><path d="M1 13c0-2.761 2.239-5 5-5s5 2.239 5 5"/><circle cx="12" cy="6" r="2"/><path d="M15 13c0-1.657-1.343-3-3-3"/></svg>
+        <span>Users</span>
+      </div>
+      <div class="nav-item" data-sec="tools">
+        <span class="nav-num">02</span>
+        <svg class="nav-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10.5 1.5 9 3l4 4 1.5-1.5a2.121 2.121 0 0 0-3-3z"/><path d="M9 3 4.5 7.5l1 3-3 3 1 1 3-3 3 1L14 7l-5-4z"/></svg>
+        <span>Tools</span>
+      </div>
+      <div class="nav-item" data-sec="files">
+        <span class="nav-num">03</span>
+        <svg class="nav-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3.5A1.5 1.5 0 0 1 3.5 2H7l2 2h3.5A1.5 1.5 0 0 1 14 5.5v7A1.5 1.5 0 0 1 12.5 14h-9A1.5 1.5 0 0 1 2 12.5v-9z"/></svg>
+        <span>Files</span>
+      </div>
+    </nav>
+  </aside>
+  <main id="main">
+    <div id="sec-users" class="section active">
+      <div class="sec-title">Users</div>
+      <div class="sec-sub">Users appear automatically after their first Access login. Workspaces are persistent across sessions.</div>
+      <div class="card">
+        <div class="card-hdr"><span class="card-hdr-label">Provision User</span></div>
+        <div class="card-body">
+          <div class="form-row" style="gap:10px">
+            <div class="form-field"><label>Display Name</label><input id="new-name" placeholder="Jane Doe"></div>
+            <div class="form-field"><label>Email</label><input id="new-email" placeholder="jane@cloudflare.com"></div>
+            <button class="primary" id="add-user-btn" style="margin-top:18px">Add</button>
+          </div>
         </div>
       </div>
-      <!-- Upload form -->
-      <div class="card-body" style="border-bottom:1px solid rgba(235,213,193,.4)">
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted);margin-bottom:14px">Upload File</div>
-        <div class="upload-grid" style="margin-bottom:12px">
-          <div class="form-row" style="margin:0">
-            <label for="shared-path">File Path</label>
-            <input type="text" id="shared-path" placeholder="/templates/cf-report.html">
-          </div>
-          <div class="form-row" style="margin:0">
-            <label for="shared-file-input">Upload from disk (optional)</label>
-            <input type="file" id="shared-file-input" onchange="onSharedFileChosen(this)">
+      <div class="card">
+        <div class="card-hdr">
+          <span class="card-hdr-label">Users</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span id="user-count" class="badge badge-m">&mdash;</span>
+            <button id="refresh-btn" class="sm">&#8635; Refresh</button>
           </div>
         </div>
-        <div class="form-row">
-          <label for="shared-content">Content <span style="font-weight:400;text-transform:none;letter-spacing:0">(paste text, or pick a file above)</span></label>
-          <textarea id="shared-content" placeholder="Paste HTML, JSON, markdown, or any text content here…"></textarea>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <button class="primary" onclick="uploadSharedFile()">Upload</button>
-          <span id="shared-upload-status" style="font-size:12px;color:var(--cf-text-muted)"></span>
-        </div>
+        <div id="users-body"><div class="empty">Loading&hellip;</div></div>
       </div>
-      <!-- File list -->
-      <div id="shared-files-body"><div class="empty">Loading…</div></div>
     </div>
-  </div>
-
-</div>
+    <div id="sec-tools" class="section">
+      <div class="sec-title">Global Tools</div>
+      <div class="sec-sub">All tools available in the AI Sandbox &mdash; built-in and custom tools from the Shared Workspace (<code style="font-size:11px;font-family:monospace;background:rgba(235,213,193,.4);padding:1px 5px;border-radius:3px">/tools/*.json</code>). Custom tools load for every user at session start.</div>
+      <div id="tools-body"><div class="empty">Loading&hellip;</div></div>
+    </div>
+    <div id="sec-files" class="section">
+      <div class="sec-title">File Manager</div>
+      <div class="sec-sub">Browse, read, create, and write files using the Workspace SDK (<code style="font-size:11px;font-family:monospace;background:rgba(235,213,193,.4);padding:1px 5px;border-radius:3px">glob &middot; readFile &middot; writeFile &middot; mkdir</code>).</div>
+      <div class="ws-bar">
+        <label style="min-width:80px">Workspace</label>
+        <select id="ws-sel" style="max-width:320px"><option value="shared">Shared Workspace</option></select>
+        <button class="primary" id="load-files-btn">Load Files</button>
+      </div>
+      <div class="file-browser">
+        <div class="fb-left">
+          <div class="fb-hdr">
+            <span class="fb-path" id="fb-path">/</span>
+            <span class="fb-count" id="fb-count">&mdash;</span>
+          </div>
+          <div id="file-tree"><div class="empty">Select a workspace and click Load Files.</div></div>
+        </div>
+        <div class="fb-right">
+          <div class="fb-action">
+            <div class="fb-action-row">
+              <div class="form-field"><label>Create Directory</label><input id="mkdir-path" placeholder="/new-folder"></div>
+              <button class="primary" id="mkdir-btn" style="margin-top:18px">mkdir</button>
+            </div>
+          </div>
+          <div class="fb-action">
+            <label>Write File</label>
+            <input id="write-path" placeholder="/path/to/file.txt" style="margin-bottom:7px">
+            <textarea id="write-content" rows="5" placeholder="File content&hellip;"></textarea>
+            <div style="text-align:right;margin-top:8px"><button class="primary" id="write-btn">Write File</button></div>
+          </div>
+          <div class="fb-action">
+            <div class="viewer-lbl">File Content</div>
+            <div class="viewer-filepath" id="viewer-path">Click a file to view its contents</div>
+            <div class="file-viewer" id="file-viewer">Click a file to view its contents, or use the actions above to create files and directories.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div></div>
 <div class="toast" id="toast"></div>
 <script>
-let ADMIN_KEY='';const BASE=window.location.origin;
-function toast(msg,ok=true){const el=document.getElementById('toast');el.textContent=msg;el.style.background=ok?'var(--cf-text)':'var(--cf-error)';el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2500);}
-async function api(path,opts={}){const res=await fetch(BASE+'/admin/api'+path,{...opts,headers:{'X-Admin-Key':ADMIN_KEY,'Content-Type':'application/json',...(opts.headers??{})}});if(res.status===401){showAuth();return null;}return res;}
-async function authenticate(){const key=document.getElementById('admin-key').value.trim();if(!key)return;ADMIN_KEY=key;const res=await api('/users');if(!res){document.getElementById('auth-error').style.display='block';ADMIN_KEY='';return;}sessionStorage.setItem('adminKey',key);document.getElementById('auth-overlay').style.display='none';renderUsers(await res.json());loadGlobalTools();loadSharedFiles();}
-function showAuth(){sessionStorage.removeItem('adminKey');document.getElementById('auth-overlay').style.display='flex';}
-async function loadAll(){await Promise.all([loadUsers(),loadGlobalTools(),loadSharedFiles()]);}
-async function loadUsers(){const res=await api('/users');if(!res)return;renderUsers(await res.json());}
-function renderUsers(users){document.getElementById('user-count').textContent=users.length+' users';if(!users.length){document.getElementById('users-body').innerHTML='<div class="empty">No users yet — they appear automatically after first login.</div>';return;}
-const rows=users.map(u=>{const k=btoa(u.email).replace(/=/g,'');return\`<tr id="row-\${k}"><td><strong>\${u.name}</strong></td><td>\${u.email}</td><td>\${new Date(u.createdAt).toLocaleDateString()}</td><td><span class="badge \${u.fileCount>0?'badge-g':'badge-m'}">\${u.fileCount} files</span></td><td style="white-space:nowrap;display:flex;gap:6px;padding:8px 12px"><button onclick="toggleFiles('\${u.email}')">Files</button><button class="danger" onclick="wipeWorkspace('\${u.email}')">Wipe</button><button class="danger" onclick="removeUser('\${u.email}')">Remove</button></td></tr><tr id="files-\${k}" style="display:none"><td colspan="5" style="padding:0"><div class="files-panel" id="fp-\${k}">Loading…</div></td></tr>\`;}).join('');
-document.getElementById('users-body').innerHTML=\`<table><thead><tr><th>Name</th><th>Email</th><th>First Login</th><th>Workspace</th><th>Actions</th></tr></thead><tbody>\${rows}</tbody></table>\`;}
-async function removeUser(email){if(!confirm('Remove '+email+'? Workspace files in D1 are NOT deleted.'))return;const res=await api('/users/'+encodeURIComponent(email),{method:'DELETE'});if(res?.ok){toast('Removed');loadUsers();}else toast('Error',false);}
-async function wipeWorkspace(email){if(!confirm('Wipe ALL files for '+email+'? This cannot be undone.'))return;const res=await api('/users/'+encodeURIComponent(email)+'/workspace',{method:'DELETE'});if(res?.ok){toast('Workspace wiped');loadUsers();}else toast('Error',false);}
-async function toggleFiles(email){const k=btoa(email).replace(/=/g,''),row=document.getElementById('files-'+k),panel=document.getElementById('fp-'+k);if(row.style.display==='none'){row.style.display='';const res=await api('/users/'+encodeURIComponent(email)+'/files');if(!res)return;const files=await res.json();if(!files.length){panel.innerHTML='<div style="color:var(--cf-text-subtle);font-size:12px;padding:4px 0">No files</div>';return;}panel.innerHTML=files.map(f=>{const isHtml=f.path.endsWith('.html');const viewUrl=BASE+'/view?user='+encodeURIComponent(email)+'&file='+encodeURIComponent(f.path);return\`<div class="file-row"><span class="file-path">\${f.path}</span><div style="display:flex;gap:8px;align-items:center">\${isHtml?'<a class="file-link" href="'+viewUrl+'" target="_blank">View ↗</a>':''}<button style="padding:3px 10px;font-size:11px" class="danger" onclick="deleteUserFile('\${email}','\${f.path}')">Delete</button></div></div>\`;}).join('');}else row.style.display='none';}
-async function deleteUserFile(email,path){if(!confirm('Delete '+path+'?'))return;const res=await api('/users/'+encodeURIComponent(email)+'/files?path='+encodeURIComponent(path),{method:'DELETE'});if(res?.ok){toast('Deleted');const k=btoa(email).replace(/=/g,'');document.getElementById('files-'+k).style.display='none';toggleFiles(email);}else toast('Error',false);}
-
-/* ── Global tools ── */
-async function loadGlobalTools(){const res=await api('/global-tools');if(!res)return;renderGlobalTools(await res.json());}
-function renderGlobalTools(tools){
-  const countEl=document.getElementById('global-tools-count');
-  const bodyEl=document.getElementById('global-tools-body');
-  countEl.textContent=tools.length+' tools';
-  if(!tools.length){bodyEl.innerHTML='<div class="empty">No global tools yet — add one above.</div>';return;}
-  bodyEl.innerHTML='<div style="padding:0 18px">'+tools.map(t=>{
-    const name=t.name||t.path.replace('/tools/','').replace('.json','');
-    return\`<div class="file-row">
-      <div style="flex:1;min-width:0">
-        <span class="file-path">\${name}</span>
-        \${t.description?'<span style="margin-left:10px;font-size:11px;color:var(--cf-text-muted)">'+t.description+'</span>':''}
-      </div>
-      <button style="padding:3px 10px;font-size:11px;flex-shrink:0" class="danger" onclick="deleteGlobalTool(\${JSON.stringify(name)})">Delete</button>
-    </div>\`;
-  }).join('')+'</div>';}
-async function uploadGlobalTool(){
-  const name=document.getElementById('gt-name').value.trim();
-  const desc=document.getElementById('gt-desc').value.trim();
-  const code=document.getElementById('gt-code').value.trim();
-  const schemaRaw=document.getElementById('gt-schema').value.trim();
-  if(!name){toast('Tool name is required',false);return;}
-  if(!code){toast('Code is required',false);return;}
-  let schema={};
-  try{if(schemaRaw&&schemaRaw!=='{}')schema=JSON.parse(schemaRaw);}catch{toast('Schema is not valid JSON',false);return;}
-  const statusEl=document.getElementById('gt-status');statusEl.textContent='Saving…';
-  const res=await api('/global-tools',{method:'POST',body:JSON.stringify({name,description:desc,schema,code})});
-  if(res?.ok){
-    toast('Global tool "'+name+'" saved');
-    document.getElementById('gt-name').value='';document.getElementById('gt-desc').value='';
-    document.getElementById('gt-code').value='';document.getElementById('gt-schema').value='{}';
-    statusEl.textContent='';loadGlobalTools();
-  }else{const err=res?await res.json():null;toast(err?.error||'Failed',false);statusEl.textContent='';}
-}
-async function deleteGlobalTool(name){
-  if(!confirm('Delete global tool "'+name+'"? All users will lose access on their next session.'))return;
-  const res=await api('/global-tools?name='+encodeURIComponent(name),{method:'DELETE'});
-  if(res?.ok){toast('Deleted');loadGlobalTools();}else toast('Error',false);
-}
-
-/* ── Shared workspace ── */
-async function loadSharedFiles(){const res=await api('/shared/files');if(!res)return;renderSharedFiles(await res.json());}
-function fmtSize(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'KB';return(b/1048576).toFixed(1)+'MB';}
-function renderSharedFiles(files){
-  const countEl=document.getElementById('shared-count');
-  const bodyEl=document.getElementById('shared-files-body');
-  countEl.textContent=files.length+' files';
-  if(!files.length){bodyEl.innerHTML='<div class="empty">No files yet — upload a template or resource above.</div>';return;}
-  bodyEl.innerHTML='<div style="padding:0 18px">'+files.map(f=>{
-    const isHtml=f.path.endsWith('.html');
-    const viewUrl=BASE+'/view?shared=true&file='+encodeURIComponent(f.path);
-    return\`<div class="file-row">
-      <span><span class="file-path">\${f.path}</span><span class="file-size">\${fmtSize(f.size??0)}</span></span>
-      <div style="display:flex;gap:8px;align-items:center">
-        \${isHtml?'<a class="file-link" href="'+viewUrl+'" target="_blank">View ↗</a>':''}
-        <button style="padding:3px 10px;font-size:11px" class="danger" onclick="deleteSharedFile(\${JSON.stringify(f.path)})">Delete</button>
-      </div>
-    </div>\`;
-  }).join('')+'</div>';}
-function onSharedFileChosen(input){if(!input.files.length)return;const name=input.files[0].name;const pathEl=document.getElementById('shared-path');if(!pathEl.value)pathEl.value='/'+name;}
-async function uploadSharedFile(){
-  const path=document.getElementById('shared-path').value.trim();
-  const fileInput=document.getElementById('shared-file-input');
-  let content=document.getElementById('shared-content').value;
-  if(!path){toast('File path is required',false);return;}
-  const statusEl=document.getElementById('shared-upload-status');
-  statusEl.textContent='Uploading…';
-  if(fileInput.files.length>0){try{content=await fileInput.files[0].text();}catch{toast('Could not read file',false);statusEl.textContent='';return;}}
-  const res=await api('/shared/files',{method:'POST',body:JSON.stringify({path,content})});
-  if(res?.ok){
-    toast('Uploaded '+path);
-    document.getElementById('shared-path').value='';
-    document.getElementById('shared-content').value='';
-    fileInput.value='';
-    statusEl.textContent='';
-    loadSharedFiles();
-  }else{const err=res?await res.json():null;toast(err?.error||'Upload failed',false);statusEl.textContent='';}
-}
-async function deleteSharedFile(path){
-  if(!confirm('Delete '+path+' from the shared workspace? All team members will lose access.'))return;
-  const res=await api('/shared/files?path='+encodeURIComponent(path),{method:'DELETE'});
-  if(res?.ok){toast('Deleted');loadSharedFiles();}else toast('Error',false);
-}
-window.addEventListener('load',()=>{const s=sessionStorage.getItem('adminKey');if(s){document.getElementById('admin-key').value=s;authenticate();}});
-document.getElementById('admin-key').addEventListener('keydown',e=>{if(e.key==='Enter')authenticate();});
+var ADMIN_KEY='',BASE=window.location.origin,bWs='shared',bPath='/',bFiles=[];
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function toast(msg,ok){var el=document.getElementById('toast');el.textContent=msg;el.style.background=(ok===false)?'var(--cf-error)':'var(--cf-text)';el.classList.add('show');setTimeout(function(){el.classList.remove('show');},2500);}
+async function api(path,opts){opts=opts||{};var h=Object.assign({'X-Admin-Key':ADMIN_KEY},opts.headers||{});var res=await fetch(BASE+'/admin/api'+path,Object.assign({},opts,{headers:h}));if(res.status===401){showAuth();return null;}return res;}
+async function authenticate(){var key=document.getElementById('admin-key').value.trim();if(!key)return;ADMIN_KEY=key;var res=await api('/users');if(!res){document.getElementById('auth-error').style.display='block';ADMIN_KEY='';return;}sessionStorage.setItem('adminKey',key);document.getElementById('auth-overlay').style.display='none';document.getElementById('app').style.display='block';renderUsers(await res.json());}
+function showAuth(){sessionStorage.removeItem('adminKey');document.getElementById('auth-overlay').style.display='flex';document.getElementById('app').style.display='none';}
+function showSection(name){document.querySelectorAll('.section').forEach(function(el){el.classList.remove('active');});document.getElementById('sec-'+name).classList.add('active');document.querySelectorAll('.nav-item').forEach(function(el){el.classList.remove('active');});document.querySelector('[data-sec="'+name+'"]').classList.add('active');if(name==='tools')loadTools();if(name==='files')populateWsSel();}
+document.getElementById('nav').addEventListener('click',function(e){var item=e.target.closest('.nav-item');if(item)showSection(item.dataset.sec);});
+async function loadUsers(){var res=await api('/users');if(!res)return;renderUsers(await res.json());}
+function renderUsers(users){document.getElementById('user-count').textContent=users.length+' users';if(!users.length){document.getElementById('users-body').innerHTML='<div class="empty">No users yet.</div>';return;}var rows='';users.forEach(function(u){rows+='<tr><td><strong>'+esc(u.name)+'</strong></td><td style="font-family:monospace;font-size:12px">'+esc(u.email)+'</td><td>'+new Date(u.createdAt).toLocaleDateString()+'</td><td><span class="badge '+(u.fileCount>0?'badge-g':'badge-m')+'">'+u.fileCount+' files</span></td><td style="white-space:nowrap"><button class="sm" data-action="browse" data-email="'+esc(u.email)+'">Browse</button> <button class="sm danger" data-action="wipe" data-email="'+esc(u.email)+'">Wipe</button> <button class="sm danger" data-action="remove" data-email="'+esc(u.email)+'">Remove</button></td></tr>';});document.getElementById('users-body').innerHTML='<table><thead><tr><th>Name</th><th>Email</th><th>First Login</th><th>Workspace</th><th>Actions</th></tr></thead><tbody>'+rows+'</tbody></table>';}
+document.getElementById('users-body').addEventListener('click',function(e){var btn=e.target.closest('button[data-action]');if(!btn)return;var a=btn.dataset.action,em=btn.dataset.email;if(a==='browse')browseUserFiles(em);if(a==='wipe')wipeWorkspace(em);if(a==='remove')removeUser(em);});
+document.getElementById('add-user-btn').addEventListener('click',async function(){var name=document.getElementById('new-name').value.trim(),email=document.getElementById('new-email').value.trim();if(!email)return;var res=await api('/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,email:email})});if(res&&res.ok){toast('User added');document.getElementById('new-name').value='';document.getElementById('new-email').value='';loadUsers();}else toast('Error',false);});
+document.getElementById('refresh-btn').addEventListener('click',loadUsers);
+async function removeUser(email){if(!confirm('Remove '+email+'? Workspace files are NOT deleted.'))return;var res=await api('/users/'+encodeURIComponent(email),{method:'DELETE'});if(res&&res.ok){toast('User removed');loadUsers();}else toast('Error',false);}
+async function wipeWorkspace(email){if(!confirm('Wipe ALL files for '+email+'? This cannot be undone.'))return;var res=await api('/users/'+encodeURIComponent(email)+'/workspace',{method:'DELETE'});if(res&&res.ok){toast('Workspace wiped');loadUsers();}else toast('Error',false);}
+function browseUserFiles(email){bWs=email;bPath='/';bFiles=[];showSection('files');setTimeout(function(){populateWsSel(email);loadBrowserFiles();},60);}
+async function loadTools(){document.getElementById('tools-body').innerHTML='<div class="empty">Loading&hellip;</div>';var res=await api('/tools');if(!res||!res.ok){document.getElementById('tools-body').innerHTML='<div class="empty">Could not load tools.</div>';return;}renderTools(await res.json());}
+function renderTools(data){var html='';html+='<div class="tools-group">Built-in</div>';(data.builtin||[]).forEach(function(t){html+=toolCard(t,'builtin');});html+='<div class="tools-group">Custom &mdash; Shared Workspace</div>';if(data.custom&&data.custom.length){data.custom.forEach(function(t){html+=toolCard(t,'custom');});}else{html+='<div style="font-size:13px;color:var(--cf-text-subtle);padding:4px 0 8px">No custom tools in <code style="font-family:monospace">/tools/*.json</code> of the Shared Workspace.</div>';}document.getElementById('tools-body').innerHTML=html;document.getElementById('tools-body').querySelectorAll('.param-toggle').forEach(function(btn){btn.addEventListener('click',function(){var tbl=btn.closest('.tool-card').querySelector('.params-tbl');var open=tbl.style.display==='table';tbl.style.display=open?'none':'table';btn.textContent=open?'Params &#9656;':'Params &#9662;';});});document.getElementById('tools-body').querySelectorAll('button[data-del-tool]').forEach(function(btn){btn.addEventListener('click',function(){deleteGlobalTool(btn.dataset.delTool);});});}
+function toolCard(t,type){var raw=t.params||t.schema||[];var params=Array.isArray(raw)?raw:Object.entries(raw).map(function(e){return{name:e[0],type:(e[1].type||'string'),description:(e[1].description||''),required:!e[1].optional};});var badge=type==='builtin'?'<span class="badge badge-g">built-in</span>':'<span class="badge badge-m">custom</span>';var actions=params.length?'<button class="sm param-toggle" style="margin-left:auto">Params &#9656;</button>':'<span style="margin-left:auto"></span>';if(type==='custom')actions+=' <button class="sm danger" data-del-tool="'+esc(t.name)+'">Delete</button>';var rows='';params.forEach(function(p){rows+='<tr><td><code>'+esc(p.name)+'</code></td><td>'+esc(p.type||'string')+'</td><td>'+(p.required?'&#10003;':'&mdash;')+'</td><td>'+esc(p.description||'')+'</td></tr>';});var tbl=params.length?'<table class="params-tbl"><thead><tr><th>Parameter</th><th>Type</th><th>Req</th><th>Description</th></tr></thead><tbody>'+rows+'</tbody></table>':'';return'<div class="tool-card"><div class="tool-card-hdr"><span class="tool-name">'+esc(t.name)+'</span>'+badge+actions+'</div><div class="tool-desc">'+esc(t.description||'')+'</div>'+tbl+'</div>';}
+async function deleteGlobalTool(name){if(!confirm('Delete global tool "'+name+'"?'))return;var res=await api('/global-tools?name='+encodeURIComponent(name),{method:'DELETE'});if(res&&res.ok){toast('Tool deleted');loadTools();}else toast('Error',false);}
+async function populateWsSel(selectEmail){var sel=document.getElementById('ws-sel');var cur=selectEmail||sel.value||bWs;var res=await api('/users');if(!res)return;var users=await res.json();var opts='<option value="shared">Shared Workspace</option>';users.forEach(function(u){opts+='<option value="'+esc(u.email)+'">'+esc(u.email)+'</option>';});sel.innerHTML=opts;sel.value=cur;bWs=sel.value;}
+async function loadBrowserFiles(){var ws=document.getElementById('ws-sel').value||'shared';bWs=ws;bFiles=[];document.getElementById('file-tree').innerHTML='<div class="empty">Loading&hellip;</div>';var res=await api('/files?workspace='+encodeURIComponent(ws));if(!res)return;bFiles=await res.json();renderTree();}
+function listDir(){var prefix=bPath==='/'?'/':bPath+'/';var seen=new Set(),dirs=[],files=[];bFiles.forEach(function(f){if(!f.path.startsWith(prefix))return;var rest=f.path.slice(prefix.length);if(!rest)return;var slash=rest.indexOf('/');if(slash===-1){if(!f.path.endsWith('/.keep'))files.push(f);}else{var d=rest.slice(0,slash);if(!seen.has(d)){seen.add(d);dirs.push(d);}}});return{dirs:dirs.sort(),files:files.sort(function(a,b){return a.path.localeCompare(b.path);})};}
+function renderTree(){var info=listDir();var all=info.dirs.length+info.files.length;document.getElementById('fb-path').textContent=bPath;document.getElementById('fb-count').textContent=all+' ITEM'+(all!==1?'S':'');var html='';if(bPath!=='/')html+='<div class="tree-row" data-type="up"><span style="font-size:12px;color:var(--cf-text-muted)">&#8593;</span><span class="tree-name">..</span></div>';info.dirs.forEach(function(d){var dp=(bPath==='/'?'':bPath)+'/'+d;html+='<div class="tree-row" data-type="dir" data-path="'+esc(dp)+'"><span style="font-size:14px">&#128193;</span><span class="tree-name">'+esc(d)+'/</span></div>';});info.files.forEach(function(f){var name=f.path.split('/').pop();var sz=f.size<1024?f.size+' B':(f.size<1048576?Math.round(f.size/1024)+' KB':Math.round(f.size/1048576)+' MB');html+='<div class="tree-row" data-type="file" data-path="'+esc(f.path)+'"><span style="font-size:14px">&#128196;</span><span class="tree-name">'+esc(name)+'</span><span class="tree-size">'+sz+'</span><button class="tree-del" data-path="'+esc(f.path)+'" title="Delete">&#215;</button></div>';});if(!html)html='<div class="empty" style="padding:20px">Empty directory</div>';document.getElementById('file-tree').innerHTML=html;}
+document.getElementById('file-tree').addEventListener('click',function(e){var del=e.target.closest('.tree-del');if(del){e.stopPropagation();delFile(del.dataset.path);return;}var row=e.target.closest('.tree-row');if(!row)return;var type=row.dataset.type;if(type==='up'){var parts=bPath.split('/').filter(Boolean);parts.pop();bPath=parts.length?'/'+parts.join('/'):'/';;renderTree();}else if(type==='dir'){bPath=row.dataset.path;renderTree();}else if(type==='file'){viewFile(row.dataset.path);document.querySelectorAll('.tree-row').forEach(function(r){r.classList.remove('selected');});row.classList.add('selected');}});
+async function viewFile(path){document.getElementById('viewer-path').textContent=path;document.getElementById('file-viewer').textContent='Loading…';var res=await api('/files/read?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path));if(!res)return;var content=await res.text();document.getElementById('file-viewer').textContent=content;document.getElementById('write-path').value=path;document.getElementById('write-content').value=content;}
+async function delFile(path){if(!confirm('Delete '+path+'?'))return;var res=await api('/files?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path),{method:'DELETE'});if(res&&res.ok){toast('Deleted');bFiles=bFiles.filter(function(f){return f.path!==path;});renderTree();}else toast('Delete failed',false);}
+document.getElementById('mkdir-btn').addEventListener('click',async function(){var path=document.getElementById('mkdir-path').value.trim();if(!path)return;var res=await api('/files/mkdir?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path),{method:'POST'});if(res&&res.ok){toast('Directory created');document.getElementById('mkdir-path').value='';loadBrowserFiles();}else toast('mkdir failed',false);});
+document.getElementById('write-btn').addEventListener('click',async function(){var path=document.getElementById('write-path').value.trim();var content=document.getElementById('write-content').value;if(!path)return;var res=await api('/files/write?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path),{method:'POST',headers:{'Content-Type':'text/plain'},body:content});if(res&&res.ok){toast('File written');loadBrowserFiles();}else toast('Write failed',false);});
+document.getElementById('load-files-btn').addEventListener('click',function(){bPath='/';loadBrowserFiles();});
+document.getElementById('ws-sel').addEventListener('change',function(){bWs=this.value;bPath='/';bFiles=[];document.getElementById('file-tree').innerHTML='<div class="empty">Click Load Files.</div>';document.getElementById('fb-path').textContent='/';document.getElementById('fb-count').textContent='&mdash;';});
+window.addEventListener('load',function(){var s=sessionStorage.getItem('adminKey');if(s){document.getElementById('admin-key').value=s;authenticate();}});
+document.getElementById('admin-key').addEventListener('keydown',function(e){if(e.key==='Enter')authenticate();});
+document.getElementById('unlock-btn').addEventListener('click',authenticate);
 </script>
-</body></html>`;
+</body>
+</html>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 }

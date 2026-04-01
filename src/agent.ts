@@ -101,6 +101,114 @@ function makeGitprismProvider() {
 
 const domainProvider = { tools: domainTools } as const;
 
+// ─── Built-in Tool Registry (served to admin panel via DO /internal/tools) ───
+
+export const BUILTIN_TOOL_DEFS = [
+  {
+    name: "run_code",
+    description: [
+      "Execute JavaScript code in an isolated V8 sandbox (~2ms startup, no network).",
+      "",
+      "Available in sandbox:",
+      "  state.*     — your personal workspace: readFile, writeFile, glob, searchFiles,",
+      "                replaceInFiles, diff, readJson, writeJson, walkTree, ...",
+      "  shared.*    — team shared workspace: same API as state.*, readable and writable by all users.",
+      "                Use this to access shared templates, configs, and team resources.",
+      "  codemode.*  — domain tools: " + Object.keys(domainTools).join(", "),
+      "  gitprism.*  — ingest_repo({ url, detail? })",
+      "                Converts a public GitHub repo to Markdown.",
+      "                detail: 'summary' | 'structure' | 'file-list' | 'full'",
+      "",
+      "Files written via state.* persist in your personal workspace.",
+      "Files written via shared.* are immediately visible to all team members.",
+      "The code must be an async arrow function or a block of statements.",
+    ].join("\n"),
+    params: [
+      { name: "code", type: "string", description: "JavaScript to run. Can use state.*, shared.*, codemode.*, and gitprism.*", required: true },
+    ],
+  },
+  {
+    name: "run_bundled_code",
+    description: [
+      "Like run_code, but installs npm packages at runtime so the sandbox can import them.",
+      "Prefer run_code for simple tasks — it's much faster.",
+      "Use dynamic import(): const { chunk } = await import('lodash');",
+      "state.*, shared.*, codemode.*, and gitprism.* are available exactly as in run_code.",
+    ].join("\n"),
+    params: [
+      { name: "code",     type: "string", description: "JavaScript to run. Use dynamic import() to load declared packages.", required: true },
+      { name: "packages", type: "object", description: "npm packages: { name: versionRange }", required: false },
+    ],
+  },
+  {
+    name: "get_report_url",
+    description: [
+      "Get a shareable browser URL for a file written to your personal workspace.",
+      "Use this after generating an HTML report with run_code.",
+      "The URL is stable — tied to your identity, not the current session.",
+    ].join("\n"),
+    params: [
+      { name: "file", type: "string", description: "Workspace path, e.g. /reports/dashboard.html", required: false },
+    ],
+  },
+  {
+    name: "get_shared_file_url",
+    description: [
+      "Get a shareable browser URL for a file in the team shared workspace.",
+      "Use this to share links to team templates or reports stored in the shared workspace.",
+      "The URL is stable and accessible to anyone with the link.",
+    ].join("\n"),
+    params: [
+      { name: "file", type: "string", description: "Shared workspace path, e.g. /templates/cf-report.html", required: true },
+    ],
+  },
+  {
+    name: "tool_create",
+    description: [
+      "Create or update a reusable custom MCP tool in your personal workspace.",
+      "The tool is saved to /tools/{name}.json and registered immediately in this session.",
+      "It will be auto-loaded at the start of every future session.",
+      "",
+      "Schema format: { fieldName: { type, description?, optional? } }",
+      "  type: 'string' | 'number' | 'boolean' | 'array' | 'object'",
+      "",
+      "Code: an async arrow function receiving the tool args as an object.",
+      "  It has access to state.*, shared.*, codemode.*, gitprism.* — same as run_code.",
+    ].join("\n"),
+    params: [
+      { name: "name",        type: "string", description: "Tool name — lowercase letters, digits, and underscores only", required: true },
+      { name: "description", type: "string", description: "What the tool does — shown to the AI in every session",         required: true },
+      { name: "schema",      type: "object", description: "Parameter schema — omit or pass {} for tools with no arguments", required: false },
+      { name: "code",        type: "string", description: "Async arrow function, e.g. async ({ arg1, arg2 }) => { ... }",  required: true },
+    ],
+  },
+  {
+    name: "tool_list",
+    description: "List all available MCP tools — built-in tools and your custom tools loaded from /tools/*.json.",
+    params: [],
+  },
+  {
+    name: "tool_delete",
+    description: [
+      "Delete a custom tool from your workspace.",
+      "The /tools/{name}.json file is removed immediately.",
+      "The tool remains callable for the rest of this session but will not load in future sessions.",
+    ].join("\n"),
+    params: [
+      { name: "name", type: "string", description: "Name of the custom tool to delete", required: true },
+    ],
+  },
+  {
+    name: "tool_reload",
+    description: [
+      "Reload custom tools from /tools/*.json in your workspace.",
+      "Use this after writing tool files manually via run_code to register them",
+      "in the current session without starting a new one.",
+    ].join("\n"),
+    params: [],
+  },
+];
+
 // ─── SandboxAgent ─────────────────────────────────────────────────────────────
 // One DO instance per MCP session.
 // User identity comes from this.props.email (set by OAuthProvider after Access login).
@@ -178,6 +286,37 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
         };
       },
     );
+  }
+
+  // ── Internal admin endpoint: /internal/tools ─────────────────────────────
+  // Called by the admin API (GET /admin/api/tools) via a DO stub.
+  // Returns built-in tool definitions + custom tools from the shared workspace.
+  async onRequest(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/internal/tools" && request.method === "GET") {
+      if (!this.env.ADMIN_SECRET || request.headers.get("X-Admin-Key") !== this.env.ADMIN_SECRET) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+          status: 401, headers: { "Content-Type": "application/json" },
+        });
+      }
+      const sharedWs = makeAgentWorkspace(this.env.WORKSPACE_DB, SHARED_NAMESPACE, this.env.STORAGE, "shared");
+      let customTools: unknown[] = [];
+      try {
+        const entries = await sharedWs.glob("/tools/*.json") as Array<{ path: string; type: string }>;
+        const loaded = await Promise.all(
+          entries.filter(e => e.type === "file").map(async (e) => {
+            const raw = await sharedWs.readFile(e.path);
+            if (!raw) return null;
+            try { return JSON.parse(raw); } catch { return null; }
+          })
+        );
+        customTools = loaded.filter(Boolean);
+      } catch { /* shared workspace may be empty */ }
+      return new Response(JSON.stringify({ builtin: BUILTIN_TOOL_DEFS, custom: customTools }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response("Not found", { status: 404 });
   }
 
   // Scan /tools/*.json and register each as an MCP tool.
