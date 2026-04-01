@@ -140,20 +140,31 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
   // Called both from loadUserTools() at init and from tool_create at runtime.
   registerUserTool(def: UserToolDef) {
     const zodSchema = buildZodSchema(def.schema);
+    const handler = async (args: Record<string, unknown>) => {
+      const executor = new DynamicWorkerExecutor({ loader: this.env.LOADER, globalOutbound: null });
+      const { result, logs, error } = await executor.execute(
+        `(${def.code})(${JSON.stringify(args)})`,
+        this.makeProviders(this.workspace),
+      );
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ result, logs: logs ?? [], error: error ?? null }, null, 2) }],
+      };
+    };
+
+    // If the tool is already registered (e.g. from a previous loadUserTools call),
+    // update its handler and description in place rather than throwing a duplicate error.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const existing = (this.server as any)._registeredTools?.[def.name];
+    if (existing) {
+      existing.update({ callback: handler, description: `[custom] ${def.description}` });
+      return;
+    }
+
     this.server.tool(
       def.name,
       `[custom] ${def.description}`,
       zodSchema,
-      async (args) => {
-        const executor = new DynamicWorkerExecutor({ loader: this.env.LOADER, globalOutbound: null });
-        const { result, logs, error } = await executor.execute(
-          `(${def.code})(${JSON.stringify(args)})`,
-          this.makeProviders(this.workspace),
-        );
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify({ result, logs: logs ?? [], error: error ?? null }, null, 2) }],
-        };
-      },
+      handler,
     );
   }
 
@@ -385,7 +396,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
       {},
       async () => {
         await this.loadUserTools();
-        return { content: [{ type: "text" as const, text: "Custom tools reloaded from /tools/." }] };
+        return { content: [{ type: "text" as const, text: "Custom tools reloaded from shared and personal /tools/ workspaces." }] };
       }
     );
 

@@ -183,10 +183,11 @@ export function buildBuiltinToolDefs(domainToolNames: string[]): ToolDef[] {
     {
       name: "tool_reload",
       description: [
-        "Reload custom tools from /tools/ in your workspace.",
+        "Reload custom tools from /tools/ in both the shared and personal workspaces.",
         "Scans /tools/{name}/tool.json (directory format) and /tools/{name}.json (flat format).",
         "Use this after writing tool files manually via run_code to register them",
         "in the current session without starting a new one.",
+        "Also updates already-registered tools whose code or description has changed.",
       ].join("\n"),
       params: [],
     },
