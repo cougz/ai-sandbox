@@ -700,7 +700,7 @@ tr:hover td{background:var(--cf-bg-hover)}
 .fb-hdr{display:flex;align-items:center;justify-content:space-between;padding:9px 13px;border-bottom:1px solid rgba(235,213,193,.4)}
 .fb-path{font-family:"SF Mono","Fira Code",monospace;font-size:12px;color:var(--cf-text);font-weight:500}
 .fb-count{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted)}
-#file-tree{overflow-y:auto;max-height:460px;min-height:240px}
+#file-tree{overflow-y:auto;height:460px}
 .tree-row{display:flex;align-items:center;gap:8px;padding:8px 13px;border-bottom:1px solid rgba(235,213,193,.18);font-size:13px;cursor:pointer;transition:background .08s;position:relative}
 .tree-row:last-child{border-bottom:none}
 .tree-row:hover{background:var(--cf-bg-hover)}
@@ -713,11 +713,7 @@ tr:hover td{background:var(--cf-bg-hover)}
 .tree-url{background:none;border:none;color:var(--cf-text-subtle);padding:1px 4px;opacity:0;cursor:pointer;font-size:13px;line-height:1;border-radius:3px;flex-shrink:0;text-decoration:none;display:inline-flex;align-items:center}
 .tree-row:hover .tree-url{opacity:.6}
 .tree-url:hover{opacity:1!important;color:var(--cf-orange)!important;background:rgba(255,72,1,.08)}
-.fb-bottom{display:flex;flex-direction:row;gap:12px;align-items:flex-start}
-.fb-bottom>.fb-action{flex:1;min-width:0}
-.fb-bottom>.fb-action:last-child{flex:2}
 .fb-action{background:var(--cf-bg-card);border:1px solid var(--cf-border);padding:14px 15px}
-.fb-action-row{display:flex;gap:8px;align-items:flex-end}
 .viewer-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted);margin-bottom:5px}
 .viewer-filepath{font-family:"SF Mono","Fira Code",monospace;font-size:11px;color:var(--cf-text-subtle);margin-bottom:6px;min-height:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .file-viewer{background:#1C0A00;color:#f5e6d3;font-family:"SF Mono","Fira Code",monospace;font-size:12px;line-height:1.5;padding:13px 14px;min-height:160px;max-height:320px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;border:1px solid #3a1500}
@@ -799,7 +795,7 @@ tr:hover td{background:var(--cf-bg-hover)}
     </div>
     <div id="sec-files" class="section">
       <div class="sec-title">File Manager</div>
-      <div class="sec-sub">Browse, read, create, and write files using the Workspace SDK (<code style="font-size:11px;font-family:monospace;background:rgba(235,213,193,.4);padding:1px 5px;border-radius:3px">glob &middot; readFile &middot; writeFile &middot; mkdir</code>).</div>
+      <div class="sec-sub">Browse and manage files across personal and shared workspaces.</div>
       <div class="ws-bar">
         <label style="min-width:80px">Workspace</label>
         <select id="ws-sel" style="max-width:320px"><option value="shared">Shared Workspace</option></select>
@@ -813,24 +809,10 @@ tr:hover td{background:var(--cf-bg-hover)}
           </div>
           <div id="file-tree"><div class="empty">Select a workspace and click Load Files.</div></div>
         </div>
-        <div class="fb-bottom">
-          <div class="fb-action">
-            <div class="fb-action-row">
-              <div class="form-field"><label>Create Directory</label><input id="mkdir-path" placeholder="/new-folder"></div>
-              <button class="primary" id="mkdir-btn" style="margin-top:18px">mkdir</button>
-            </div>
-          </div>
-          <div class="fb-action">
-            <label>Write File</label>
-            <input id="write-path" placeholder="/path/to/file.txt" style="margin-bottom:7px">
-            <textarea id="write-content" rows="5" placeholder="File content&hellip;"></textarea>
-            <div style="text-align:right;margin-top:8px"><button class="primary" id="write-btn">Write File</button></div>
-          </div>
-          <div class="fb-action">
-            <div class="viewer-lbl">File Content</div>
-            <div class="viewer-filepath" id="viewer-path">Click a file to view its contents</div>
-            <div class="file-viewer" id="file-viewer">Click a file to view its contents, or use the actions above to create files and directories.</div>
-          </div>
+        <div class="fb-action">
+          <div class="viewer-lbl">File Content</div>
+          <div class="viewer-filepath" id="viewer-path">Select a file to view its contents</div>
+          <div class="file-viewer" id="file-viewer">Select a file to view its contents.</div>
         </div>
       </div>
     </div>
@@ -927,14 +909,13 @@ async function deleteGlobalTool(name){if(!confirm('Delete global tool "'+name+'"
 async function populateWsSel(selectEmail){var sel=document.getElementById('ws-sel');var cur=selectEmail||sel.value||bWs;var res=await api('/users');if(!res)return;var users=await res.json();var opts='<option value="shared">Shared Workspace</option>';users.forEach(function(u){opts+='<option value="'+esc(u.email)+'">'+esc(u.email)+'</option>';});sel.innerHTML=opts;sel.value=cur;bWs=sel.value;}
 async function loadBrowserFiles(){var ws=document.getElementById('ws-sel').value||'shared';bWs=ws;bFiles=[];resetViewer();document.getElementById('file-tree').innerHTML='<div class="empty">Loading\u2026</div>';var res=await api('/files?workspace='+encodeURIComponent(ws));if(!res)return;bFiles=await res.json();renderTree();}
 function listDir(){var prefix=bPath==='/'?'/':bPath+'/';var seen=new Set(),dirs=[],files=[];bFiles.forEach(function(f){if(!f.path.startsWith(prefix))return;var rest=f.path.slice(prefix.length);if(!rest)return;var slash=rest.indexOf('/');if(slash===-1){if(!f.path.endsWith('/.keep'))files.push(f);}else{var d=rest.slice(0,slash);if(!seen.has(d)){seen.add(d);dirs.push(d);}}});return{dirs:dirs.sort(),files:files.sort(function(a,b){return a.path.localeCompare(b.path);})};}
-function renderTree(){var info=listDir();var all=info.dirs.length+info.files.length;document.getElementById('fb-path').textContent=bPath;document.getElementById('fb-count').textContent=all+' ITEM'+(all!==1?'S':'');var html='';if(bPath!=='/')html+='<div class="tree-row" data-type="up"><span style="font-size:12px;color:var(--cf-text-muted)">&#8593;</span><span class="tree-name">..</span></div>';info.dirs.forEach(function(d){var dp=(bPath==='/'?'':bPath)+'/'+d;html+='<div class="tree-row" data-type="dir" data-path="'+esc(dp)+'"><span style="font-size:14px">&#128193;</span><span class="tree-name">'+esc(d)+'/</span></div>';});info.files.forEach(function(f){var name=f.path.split('/').pop();var sz=f.size<1024?f.size+' B':(f.size<1048576?Math.round(f.size/1024)+' KB':Math.round(f.size/1048576)+' MB');var vu=getViewUrl(f.path);html+='<div class="tree-row" data-type="file" data-path="'+esc(f.path)+'"><span style="font-size:14px">&#128196;</span><span class="tree-name">'+esc(name)+'</span><span class="tree-size">'+sz+'</span><a class="tree-url" href="'+esc(vu)+'" target="_blank" rel="noopener" title="Open in browser">&#128279;</a><button class="tree-del" data-path="'+esc(f.path)+'" title="Delete">&#215;</button></div>';});if(!html)html='<div class="empty" style="padding:20px">Empty directory</div>';document.getElementById('file-tree').innerHTML=html;}
-document.getElementById('file-tree').addEventListener('click',function(e){if(e.target.closest('.tree-url'))return;var del=e.target.closest('.tree-del');if(del){e.stopPropagation();delFile(del.dataset.path);return;}var row=e.target.closest('.tree-row');if(!row)return;var type=row.dataset.type;if(type==='up'){var parts=bPath.split('/').filter(Boolean);parts.pop();bPath=parts.length?'/'+parts.join('/'):'/';;renderTree();}else if(type==='dir'){bPath=row.dataset.path;renderTree();}else if(type==='file'){viewFile(row.dataset.path);document.querySelectorAll('.tree-row').forEach(function(r){r.classList.remove('selected');});row.classList.add('selected');}});
+function renderTree(){var info=listDir();var all=info.dirs.length+info.files.length;document.getElementById('fb-path').textContent=bPath;document.getElementById('fb-count').textContent=all+' ITEM'+(all!==1?'S':'');var html='';if(bPath!=='/')html+='<div class="tree-row" data-type="up"><span style="font-size:12px;color:var(--cf-text-muted)">&#8593;</span><span class="tree-name">..</span></div>';info.dirs.forEach(function(d){var dp=(bPath==='/'?'':bPath)+'/'+d;html+='<div class="tree-row" data-type="dir" data-path="'+esc(dp)+'"><span style="font-size:14px">&#128193;</span><span class="tree-name">'+esc(d)+'/</span><button class="tree-del" data-path="'+esc(dp)+'" data-deltype="dir" title="Delete directory">&#215;</button></div>';});info.files.forEach(function(f){var name=f.path.split('/').pop();var sz=f.size<1024?f.size+' B':(f.size<1048576?Math.round(f.size/1024)+' KB':Math.round(f.size/1048576)+' MB');var vu=getViewUrl(f.path);html+='<div class="tree-row" data-type="file" data-path="'+esc(f.path)+'"><span style="font-size:14px">&#128196;</span><span class="tree-name">'+esc(name)+'</span><span class="tree-size">'+sz+'</span><a class="tree-url" href="'+esc(vu)+'" target="_blank" rel="noopener" title="Open in browser">&#128279;</a><button class="tree-del" data-path="'+esc(f.path)+'" data-deltype="file" title="Delete">&#215;</button></div>';});if(!html)html='<div class="empty" style="padding:20px">Empty directory</div>';document.getElementById('file-tree').innerHTML=html;}
+document.getElementById('file-tree').addEventListener('click',function(e){if(e.target.closest('.tree-url'))return;var del=e.target.closest('.tree-del');if(del){e.stopPropagation();if(del.dataset.deltype==='dir')delDir(del.dataset.path);else delFile(del.dataset.path);return;}var row=e.target.closest('.tree-row');if(!row)return;var type=row.dataset.type;if(type==='up'){var parts=bPath.split('/').filter(Boolean);parts.pop();bPath=parts.length?'/'+parts.join('/'):'/';;renderTree();}else if(type==='dir'){bPath=row.dataset.path;renderTree();}else if(type==='file'){viewFile(row.dataset.path);document.querySelectorAll('.tree-row').forEach(function(r){r.classList.remove('selected');});row.classList.add('selected');}});
 function getViewUrl(path){var base=window.location.origin;if(bWs==='shared')return base+'/view?shared=true&file='+encodeURIComponent(path);return base+'/view?user='+encodeURIComponent(bWs)+'&file='+encodeURIComponent(path);}
-function resetViewer(){document.getElementById('viewer-path').textContent='Click a file to view its contents';document.getElementById('file-viewer').textContent='Click a file to view its contents, or use the actions above to create files and directories.';}
-async function viewFile(path){document.getElementById('viewer-path').textContent=path;document.getElementById('file-viewer').textContent='Loading\u2026';var res=await api('/files/read?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path));if(!res)return;var content=await res.text();document.getElementById('file-viewer').textContent=content;document.getElementById('write-path').value=path;document.getElementById('write-content').value=content;}
+function resetViewer(){document.getElementById('viewer-path').textContent='Select a file to view its contents';document.getElementById('file-viewer').textContent='Select a file to view its contents.';}
+async function viewFile(path){document.getElementById('viewer-path').textContent=path;document.getElementById('file-viewer').textContent='Loading\u2026';var res=await api('/files/read?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path));if(!res)return;var content=await res.text();document.getElementById('file-viewer').textContent=content;}
 async function delFile(path){if(!confirm('Delete '+path+'?'))return;var res=await api('/files?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path),{method:'DELETE'});if(res&&res.ok){toast('Deleted');bFiles=bFiles.filter(function(f){return f.path!==path;});renderTree();}else toast('Delete failed',false);}
-document.getElementById('mkdir-btn').addEventListener('click',async function(){var path=document.getElementById('mkdir-path').value.trim();if(!path)return;var res=await api('/files/mkdir?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path),{method:'POST'});if(res&&res.ok){toast('Directory created');document.getElementById('mkdir-path').value='';loadBrowserFiles();}else toast('mkdir failed',false);});
-document.getElementById('write-btn').addEventListener('click',async function(){var path=document.getElementById('write-path').value.trim();var content=document.getElementById('write-content').value;if(!path)return;var res=await api('/files/write?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(path),{method:'POST',headers:{'Content-Type':'text/plain'},body:content});if(res&&res.ok){toast('File written');loadBrowserFiles();}else toast('Write failed',false);});
+async function delDir(dirPath){var children=bFiles.filter(function(f){return f.path===dirPath+'/.keep'||f.path.startsWith(dirPath+'/');});var count=children.filter(function(f){return!f.path.endsWith('/.keep');}).length;var msg=count>0?'Delete directory '+dirPath+' and all '+count+' file(s) inside?':'Delete empty directory '+dirPath+'?';if(!confirm(msg))return;var failed=0;for(var i=0;i<children.length;i++){var r=await api('/files?workspace='+encodeURIComponent(bWs)+'&path='+encodeURIComponent(children[i].path),{method:'DELETE'});if(!r||!r.ok)failed++;}if(failed)toast(failed+' deletion(s) failed',false);else toast('Directory deleted');loadBrowserFiles();}
 document.getElementById('load-files-btn').addEventListener('click',function(){bPath='/';loadBrowserFiles();});
 document.getElementById('ws-sel').addEventListener('change',function(){bWs=this.value;bPath='/';bFiles=[];resetViewer();document.getElementById('file-tree').innerHTML='<div class="empty">Click Load Files.</div>';document.getElementById('fb-path').textContent='/';document.getElementById('fb-count').textContent='&mdash;';});
 window.addEventListener('load',function(){var s=sessionStorage.getItem('adminKey');if(s){document.getElementById('admin-key').value=s;authenticate();}});
