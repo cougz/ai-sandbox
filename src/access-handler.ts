@@ -92,14 +92,19 @@ const ADMIN_BUILTIN_TOOLS = [
     name: "tool_create",
     description: [
       "Create or update a reusable custom MCP tool in your personal workspace.",
-      "The tool is saved to /tools/{name}.json and registered immediately in this session.",
+      "The tool is saved to /tools/{name}/tool.json (directory format — new standard).",
       "It will be auto-loaded at the start of every future session.",
+      "",
+      "Tool layout (directory format):",
+      "  /tools/{name}/tool.json   ← required: tool definition",
+      "  /tools/{name}/README.md   ← optional: usage docs",
+      "  /tools/{name}/*.html      ← optional: HTML templates",
+      "  /tools/{name}/*.md        ← optional: reference data",
       "",
       "Schema format: { fieldName: { type, description?, optional? } }",
       "  type: 'string' | 'number' | 'boolean' | 'array' | 'object'",
       "",
-      "Code: an async arrow function receiving the tool args as an object.",
-      "  It has access to state.*, shared.*, codemode.*, gitprism.* — same as run_code.",
+      "Code: an async arrow function with access to state.*, shared.*, codemode.*, gitprism.*",
     ].join("\n"),
     params: [
       { name: "name",        type: "string", description: "Tool name — lowercase letters, digits, and underscores only", required: true },
@@ -110,14 +115,17 @@ const ADMIN_BUILTIN_TOOLS = [
   },
   {
     name: "tool_list",
-    description: "List all available MCP tools — built-in tools and your custom tools loaded from /tools/*.json.",
+    description: [
+      "List all available MCP tools — built-in tools and your custom tools.",
+      "Scans /tools/{name}/tool.json (directory format) and /tools/{name}.json (flat format).",
+    ].join("\n"),
     params: [],
   },
   {
     name: "tool_delete",
     description: [
-      "Delete a custom tool from your workspace.",
-      "The /tools/{name}.json file is removed immediately.",
+      "Delete a custom tool from your personal workspace.",
+      "Tries /tools/{name}/tool.json (directory format) then /tools/{name}.json (flat format).",
       "The tool remains callable for the rest of this session but will not load in future sessions.",
     ].join("\n"),
     params: [
@@ -127,7 +135,8 @@ const ADMIN_BUILTIN_TOOLS = [
   {
     name: "tool_reload",
     description: [
-      "Reload custom tools from /tools/*.json in your workspace.",
+      "Reload custom tools from /tools/ in your workspace.",
+      "Scans /tools/{name}/tool.json (directory format) and /tools/{name}.json (flat format).",
       "Use this after writing tool files manually via run_code to register them",
       "in the current session without starting a new one.",
     ].join("\n"),
@@ -628,20 +637,37 @@ async function handleAdminApi(request: Request, env: Env, ctx: ExecutionContext)
   }
 
   // ── GET /tools — list all tools (built-in static + custom from shared ws) ──
+  // Scans /tools/{name}/tool.json (directory format, new standard) and
+  // /tools/{name}.json (flat format, backward compat). Directory takes precedence.
   if (method === "GET" && path === "/tools") {
     const ws = makeSharedWorkspace(env);
     let customTools: unknown[] = [];
     try {
-      const entries = await ws.glob("/tools/*.json") as Array<{ path: string; type: string }>;
-      const loaded = await Promise.all(
-        entries.filter(e => e.type === "file").map(async (e) => {
-          const raw = await ws.readFile(e.path);
-          if (!raw) return null;
-          try { return JSON.parse(raw); } catch { return null; }
-        })
-      );
-      customTools = loaded.filter(Boolean);
-    } catch { /* shared workspace empty */ }
+      const entries = await ws.glob("/tools/**") as Array<{ path: string; type: string }>;
+      const dir  = entries.filter(e => e.type === "file" && /^\/tools\/[^/]+\/tool\.json$/.test(e.path));
+      const flat = entries.filter(e => e.type === "file" && /^\/tools\/[^/]+\.json$/.test(e.path));
+      const seen = new Set<string>();
+      const loaded: unknown[] = [];
+      for (const entry of [...dir, ...flat]) {
+        const m = entry.path.match(/^\/tools\/([^/]+)(?:\/tool)?\.json$/);
+        if (!m || seen.has(m[1])) continue;
+        const raw = await ws.readFile(entry.path);
+        if (!raw) continue;
+        try {
+          const def = JSON.parse(raw);
+          // For directory tools, list supporting files
+          if (/^\/tools\/[^/]+\/tool\.json$/.test(entry.path)) {
+            const toolDir = entry.path.replace("/tool.json", "");
+            def._files = entries
+              .filter(e => e.type === "file" && e.path.startsWith(toolDir + "/") && e.path !== entry.path)
+              .map(e => e.path);
+          }
+          loaded.push(def);
+          seen.add(m[1]);
+        } catch { /* skip malformed */ }
+      }
+      customTools = loaded;
+    } catch { /* shared workspace empty or unavailable */ }
     writeLog(env, ctx, "info", "admin.tools.list", { builtin: ADMIN_BUILTIN_TOOLS.length, custom: customTools.length });
     return jsonResp({ builtin: ADMIN_BUILTIN_TOOLS, custom: customTools });
   }
@@ -956,8 +982,53 @@ async function removeUser(email){if(!confirm('Remove '+email+'? Workspace files 
 async function wipeWorkspace(email){if(!confirm('Wipe ALL files for '+email+'? This cannot be undone.'))return;var res=await api('/users/'+encodeURIComponent(email)+'/workspace',{method:'DELETE'});if(res&&res.ok){toast('Workspace wiped');loadUsers();}else toast('Error',false);}
 function browseUserFiles(email){bWs=email;bPath='/';bFiles=[];showSection('files');setTimeout(function(){populateWsSel(email);loadBrowserFiles();},60);}
 async function loadTools(){document.getElementById('tools-body').innerHTML='<div class="empty">Loading&hellip;</div>';var res=await api('/tools');if(!res||!res.ok){document.getElementById('tools-body').innerHTML='<div class="empty">Could not load tools.</div>';return;}renderTools(await res.json());}
-function renderTools(data){var html='';html+='<div class="tools-group">Built-in</div>';(data.builtin||[]).forEach(function(t){html+=toolCard(t,'builtin');});html+='<div class="tools-group">Custom &mdash; Shared Workspace</div>';if(data.custom&&data.custom.length){data.custom.forEach(function(t){html+=toolCard(t,'custom');});}else{html+='<div style="font-size:13px;color:var(--cf-text-subtle);padding:4px 0 8px">No custom tools in <code style="font-family:monospace">/tools/*.json</code> of the Shared Workspace.</div>';}document.getElementById('tools-body').innerHTML=html;document.getElementById('tools-body').querySelectorAll('.param-toggle').forEach(function(btn){btn.addEventListener('click',function(){var tbl=btn.closest('.tool-card').querySelector('.params-tbl');var open=tbl.style.display==='table';tbl.style.display=open?'none':'table';btn.innerHTML=open?'Params &#9656;':'Params &#9662;';});});document.getElementById('tools-body').querySelectorAll('button[data-del-tool]').forEach(function(btn){btn.addEventListener('click',function(){deleteGlobalTool(btn.dataset.delTool);});});}
-function toolCard(t,type){var raw=t.params||t.schema||[];var params=Array.isArray(raw)?raw:Object.entries(raw).map(function(e){return{name:e[0],type:(e[1].type||'string'),description:(e[1].description||''),required:!e[1].optional};});var badge=type==='builtin'?'<span class="badge badge-g">built-in</span>':'<span class="badge badge-m">custom</span>';var actions=params.length?'<button class="sm param-toggle" style="margin-left:auto">Params &#9656;</button>':'<span style="margin-left:auto"></span>';if(type==='custom')actions+=' <button class="sm danger" data-del-tool="'+esc(t.name)+'">Delete</button>';var rows='';params.forEach(function(p){rows+='<tr><td><code>'+esc(p.name)+'</code></td><td>'+esc(p.type||'string')+'</td><td>'+(p.required?'&#10003;':'&mdash;')+'</td><td>'+esc(p.description||'')+'</td></tr>';});var tbl=params.length?'<table class="params-tbl"><thead><tr><th>Parameter</th><th>Type</th><th>Req</th><th>Description</th></tr></thead><tbody>'+rows+'</tbody></table>':'';return'<div class="tool-card"><div class="tool-card-hdr"><span class="tool-name">'+esc(t.name)+'</span>'+badge+actions+'</div><div class="tool-desc">'+esc(t.description||'')+'</div>'+tbl+'</div>';}
+function renderTools(data){
+  var html='';
+  html+='<div class="tools-group">Built-in</div>';
+  (data.builtin||[]).forEach(function(t){html+=toolCard(t,'builtin');});
+  html+='<div class="tools-group">Custom &mdash; Shared Workspace</div>';
+  if(data.custom&&data.custom.length){
+    data.custom.forEach(function(t){html+=toolCard(t,'custom');});
+  }else{
+    html+='<div style="font-size:13px;color:var(--cf-text-subtle);padding:4px 0 8px">No custom tools found. Place tool definitions at <code style="font-family:monospace">/tools/{name}/tool.json</code> (directory format) or <code style="font-family:monospace">/tools/{name}.json</code> (flat) in the Shared Workspace.</div>';
+  }
+  document.getElementById('tools-body').innerHTML=html;
+  document.getElementById('tools-body').querySelectorAll('.param-toggle').forEach(function(btn){
+    btn.addEventListener('click',function(){var tbl=btn.closest('.tool-card').querySelector('.params-tbl');var open=tbl.style.display==='table';tbl.style.display=open?'none':'table';btn.innerHTML=open?'Params &#9656;':'Params &#9662;';});
+  });
+  document.getElementById('tools-body').querySelectorAll('.files-toggle').forEach(function(btn){
+    btn.addEventListener('click',function(){var fl=btn.closest('.tool-card').querySelector('.tool-files');var open=fl.style.display!=='none';fl.style.display=open?'none':'block';btn.innerHTML=open?'Files &#9656;':'Files &#9662;';});
+  });
+  document.getElementById('tools-body').querySelectorAll('button[data-del-tool]').forEach(function(btn){
+    btn.addEventListener('click',function(){deleteGlobalTool(btn.dataset.delTool);});
+  });
+  document.getElementById('tools-body').querySelectorAll('button[data-browse-tool]').forEach(function(btn){
+    btn.addEventListener('click',function(){browseUserFiles('shared');setTimeout(function(){var f=btn.dataset.browseDir;if(f){bPath=f;renderTree();}},200);});
+  });
+}
+function toolCard(t,type){
+  var raw=t.params||t.schema||[];
+  var params=Array.isArray(raw)?raw:Object.entries(raw).map(function(e){return{name:e[0],type:(e[1].type||'string'),description:(e[1].description||''),required:!e[1].optional};});
+  var badge=type==='builtin'?'<span class="badge badge-g">built-in</span>':'<span class="badge badge-m">custom</span>';
+  var actions=params.length?'<button class="sm param-toggle" style="margin-left:auto">Params &#9656;</button>':'<span style="margin-left:auto"></span>';
+  if(type==='custom'){
+    if(t._files&&t._files.length){
+      var toolDir=t._files[0].replace(/\/[^/]+$/,'');
+      actions+=' <button class="sm files-toggle">Files &#9656;</button>';
+      actions+=' <button class="sm" data-browse-tool="'+esc(t.name)+'" data-browse-dir="'+esc(toolDir)+'">Browse</button>';
+    }
+    actions+=' <button class="sm danger" data-del-tool="'+esc(t.name)+'">Delete</button>';
+  }
+  var rows='';
+  params.forEach(function(p){rows+='<tr><td><code>'+esc(p.name)+'</code></td><td>'+esc(p.type||'string')+'</td><td>'+(p.required?'&#10003;':'&mdash;')+'</td><td>'+esc(p.description||'')+'</td></tr>';});
+  var tbl=params.length?'<table class="params-tbl"><thead><tr><th>Parameter</th><th>Type</th><th>Req</th><th>Description</th></tr></thead><tbody>'+rows+'</tbody></table>':'';
+  var filesSection='';
+  if(t._files&&t._files.length){
+    var fileItems=t._files.map(function(f){var name=f.split('/').pop();return'<span style="font-family:monospace;font-size:11px;display:inline-block;background:rgba(235,213,193,.3);padding:1px 6px;border-radius:3px;margin:2px">'+esc(name)+'</span>';}).join(' ');
+    filesSection='<div class="tool-files" style="display:none;margin-top:8px;padding:8px 10px;background:var(--cf-bg);border:1px solid rgba(235,213,193,.4)"><div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--cf-text-muted);margin-bottom:5px">Supporting Files</div>'+fileItems+'</div>';
+  }
+  return'<div class="tool-card"><div class="tool-card-hdr"><span class="tool-name">'+esc(t.name)+'</span>'+badge+actions+'</div><div class="tool-desc">'+esc(t.description||'')+'</div>'+tbl+filesSection+'</div>';
+}
 async function deleteGlobalTool(name){if(!confirm('Delete global tool "'+name+'"?'))return;var res=await api('/global-tools?name='+encodeURIComponent(name),{method:'DELETE'});if(res&&res.ok){toast('Tool deleted');loadTools();}else toast('Error',false);}
 async function populateWsSel(selectEmail){var sel=document.getElementById('ws-sel');var cur=selectEmail||sel.value||bWs;var res=await api('/users');if(!res)return;var users=await res.json();var opts='<option value="shared">Shared Workspace</option>';users.forEach(function(u){opts+='<option value="'+esc(u.email)+'">'+esc(u.email)+'</option>';});sel.innerHTML=opts;sel.value=cur;bWs=sel.value;}
 async function loadBrowserFiles(){var ws=document.getElementById('ws-sel').value||'shared';bWs=ws;bFiles=[];document.getElementById('file-tree').innerHTML='<div class="empty">Loading&hellip;</div>';var res=await api('/files?workspace='+encodeURIComponent(ws));if(!res)return;bFiles=await res.json();renderTree();}

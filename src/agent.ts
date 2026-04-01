@@ -302,15 +302,30 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
       const sharedWs = makeAgentWorkspace(this.env.WORKSPACE_DB, SHARED_NAMESPACE, this.env.STORAGE, "shared");
       let customTools: unknown[] = [];
       try {
-        const entries = await sharedWs.glob("/tools/*.json") as Array<{ path: string; type: string }>;
-        const loaded = await Promise.all(
-          entries.filter(e => e.type === "file").map(async (e) => {
-            const raw = await sharedWs.readFile(e.path);
-            if (!raw) return null;
-            try { return JSON.parse(raw); } catch { return null; }
-          })
-        );
-        customTools = loaded.filter(Boolean);
+        const entries = await sharedWs.glob("/tools/**") as Array<{ path: string; type: string }>;
+        const dir  = entries.filter(e => e.type === "file" && /^\/tools\/[^/]+\/tool\.json$/.test(e.path));
+        const flat = entries.filter(e => e.type === "file" && /^\/tools\/[^/]+\.json$/.test(e.path));
+        const seen = new Set<string>();
+        const loaded: unknown[] = [];
+        for (const entry of [...dir, ...flat]) {
+          const m = entry.path.match(/^\/tools\/([^/]+)(?:\/tool)?\.json$/);
+          if (!m || seen.has(m[1])) continue;
+          const raw = await sharedWs.readFile(entry.path);
+          if (!raw) continue;
+          try {
+            const def = JSON.parse(raw);
+            // Attach supporting files for directory-format tools
+            if (/^\/tools\/[^/]+\/tool\.json$/.test(entry.path)) {
+              const toolDir = entry.path.replace("/tool.json", "");
+              def._files = entries
+                .filter(e => e.type === "file" && e.path.startsWith(toolDir + "/") && e.path !== entry.path)
+                .map(e => e.path);
+            }
+            loaded.push(def);
+            seen.add(m[1]);
+          } catch { /* skip malformed */ }
+        }
+        customTools = loaded;
       } catch { /* shared workspace may be empty */ }
       return new Response(JSON.stringify({ builtin: BUILTIN_TOOL_DEFS, custom: customTools }), {
         headers: { "Content-Type": "application/json" },
@@ -319,20 +334,33 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     return new Response("Not found", { status: 404 });
   }
 
-  // Scan /tools/*.json and register each as an MCP tool.
+  // Scan /tools/ for tool definitions, supporting two layouts:
+  //   Flat:      /tools/{name}.json        — legacy / simple tools
+  //   Directory: /tools/{name}/tool.json   — new standard (tool + assets in one dir)
+  // Directory format takes precedence if both exist for the same name.
   // Global tools (shared workspace) are loaded first; personal tools load second
-  // and override any global tool with the same name.
+  // and can override a global tool with the same name.
   async loadUserTools() {
     const loadFrom = async (ws: Workspace) => {
       let entries: Array<{ path: string; type: string }> = [];
-      try { entries = await ws.glob("/tools/*.json") as Array<{ path: string; type: string }>; }
+      try { entries = await ws.glob("/tools/**") as Array<{ path: string; type: string }>; }
       catch { return; }
-      for (const entry of entries.filter(e => e.type === "file")) {
+
+      const dirEntries  = entries.filter(e => e.type === "file" && /^\/tools\/[^/]+\/tool\.json$/.test(e.path));
+      const flatEntries = entries.filter(e => e.type === "file" && /^\/tools\/[^/]+\.json$/.test(e.path));
+      const seen = new Set<string>();
+
+      for (const entry of [...dirEntries, ...flatEntries]) {
+        const m = entry.path.match(/^\/tools\/([^/]+)(?:\/tool)?\.json$/);
+        if (!m || seen.has(m[1])) continue;
         try {
           const content = await ws.readFile(entry.path);
           if (!content) continue;
           const def: UserToolDef = JSON.parse(content);
-          if (def.name && def.description && def.code) this.registerUserTool(def);
+          if (def.name && def.description && def.code) {
+            this.registerUserTool(def);
+            seen.add(m[1]);
+          }
         } catch { /* skip malformed */ }
       }
     };
@@ -433,8 +461,14 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
       "tool_create",
       [
         "Create or update a reusable custom MCP tool in your personal workspace.",
-        "The tool is saved to /tools/{name}.json and registered immediately in this session.",
+        "The tool is saved to /tools/{name}/tool.json and registered immediately in this session.",
         "It will be auto-loaded at the start of every future session.",
+        "",
+        "Tool layout (directory format — new standard):",
+        "  /tools/{name}/tool.json   ← required: tool definition (this file)",
+        "  /tools/{name}/README.md   ← optional: usage docs",
+        "  /tools/{name}/*.html      ← optional: HTML templates",
+        "  /tools/{name}/*.md        ← optional: reference data / framework docs",
         "",
         "Schema format: { fieldName: { type, description?, optional? } }",
         "  type: 'string' | 'number' | 'boolean' | 'array' | 'object'",
@@ -447,7 +481,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
         "  description: 'Render data into the Cloudflare HTML report template'",
         "  schema: { title: { type: 'string' }, data: { type: 'object' } }",
         "  code: 'async ({ title, data }) => {",
-        "    const tpl = await shared.readFile(\"/templates/cf-report.html\");",
+        "    const tpl = await shared.readFile(\"/tools/render_cf_report/template.html\");",
         "    return tpl.replace(\"{{title}}\", title).replace(\"{{data}}\", JSON.stringify(data));",
         "  }'",
       ].join("\n"),
@@ -463,10 +497,11 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
       },
       async ({ name, description, schema, code }) => {
         const def: UserToolDef = { name, description, schema: schema ?? {}, code };
-        await this.workspace.writeFile(`/tools/${name}.json`, JSON.stringify(def, null, 2));
+        const path = `/tools/${name}/tool.json`;
+        await this.workspace.writeFile(path, JSON.stringify(def, null, 2));
         this.registerUserTool(def);
         return {
-          content: [{ type: "text" as const, text: `Tool '${name}' saved to /tools/${name}.json and registered in this session.` }],
+          content: [{ type: "text" as const, text: `Tool '${name}' saved to ${path} and registered in this session.` }],
         };
       }
     );
@@ -474,7 +509,10 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // ── tool_list ─────────────────────────────────────────────────────────────
     this.server.tool(
       "tool_list",
-      "List all available MCP tools — built-in tools and your custom tools loaded from /tools/*.json.",
+      [
+        "List all available MCP tools — built-in tools and your custom tools.",
+        "Scans /tools/{name}/tool.json (directory format) and /tools/{name}.json (flat format).",
+      ].join("\n"),
       {},
       async () => {
         const builtIn = [
@@ -482,16 +520,22 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
           "get_report_url", "get_shared_file_url",
           "tool_create", "tool_list", "tool_delete", "tool_reload",
         ];
-        const readTools = async (ws: Workspace): Promise<Array<{ name: string; description: string }>> => {
-          const out: Array<{ name: string; description: string }> = [];
+        const readTools = async (ws: Workspace): Promise<Array<{ name: string; description: string; path: string }>> => {
+          const out: Array<{ name: string; description: string; path: string }> = [];
           try {
-            const entries = await ws.glob("/tools/*.json") as Array<{ path: string; type: string }>;
-            for (const entry of entries.filter(e => e.type === "file")) {
+            const entries = await ws.glob("/tools/**") as Array<{ path: string; type: string }>;
+            const dir  = entries.filter(e => e.type === "file" && /^\/tools\/[^/]+\/tool\.json$/.test(e.path));
+            const flat = entries.filter(e => e.type === "file" && /^\/tools\/[^/]+\.json$/.test(e.path));
+            const seen = new Set<string>();
+            for (const entry of [...dir, ...flat]) {
+              const m = entry.path.match(/^\/tools\/([^/]+)(?:\/tool)?\.json$/);
+              if (!m || seen.has(m[1])) continue;
               try {
                 const content = await ws.readFile(entry.path);
                 if (!content) continue;
                 const def: UserToolDef = JSON.parse(content);
-                out.push({ name: def.name, description: def.description });
+                out.push({ name: def.name, description: def.description, path: entry.path });
+                seen.add(m[1]);
               } catch { /* skip */ }
             }
           } catch { /* no /tools dir */ }
@@ -511,20 +555,21 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     this.server.tool(
       "tool_delete",
       [
-        "Delete a custom tool from your workspace.",
-        "The /tools/{name}.json file is removed immediately.",
+        "Delete a custom tool from your personal workspace.",
+        "Tries /tools/{name}/tool.json (directory format) then /tools/{name}.json (flat format).",
         "The tool remains callable for the rest of this session but will not load in future sessions.",
+        "Note: only tool.json is deleted; other files in the tool directory are kept.",
       ].join("\n"),
       { name: z.string().describe("Name of the custom tool to delete") },
       async ({ name }) => {
-        try {
-          await this.workspace.rm(`/tools/${name}.json`);
-          return {
-            content: [{ type: "text" as const, text: `Tool '${name}' deleted. It will not load in future sessions.` }],
-          };
-        } catch {
-          return { content: [{ type: "text" as const, text: `Tool '${name}' not found in /tools/.` }] };
+        const paths = [`/tools/${name}/tool.json`, `/tools/${name}.json`];
+        for (const p of paths) {
+          try {
+            await this.workspace.rm(p);
+            return { content: [{ type: "text" as const, text: `Tool '${name}' deleted (${p}). It will not load in future sessions.` }] };
+          } catch { /* try next */ }
         }
+        return { content: [{ type: "text" as const, text: `Tool '${name}' not found in /tools/.` }] };
       }
     );
 
@@ -532,7 +577,8 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     this.server.tool(
       "tool_reload",
       [
-        "Reload custom tools from /tools/*.json in your workspace.",
+        "Reload custom tools from /tools/ in your workspace.",
+        "Scans /tools/{name}/tool.json (directory format) and /tools/{name}.json (flat format).",
         "Use this after writing tool files manually via run_code to register them",
         "in the current session without starting a new one.",
       ].join("\n"),
