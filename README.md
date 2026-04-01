@@ -65,7 +65,7 @@ MCP client sends a natural-language task
         │  Workers RPC (ToolDispatcher)
         ▼
   Host Worker - executes the real tool logic
-  (state.*, codemode.*, gitprism.* - full env access)
+  (state.*, codemode.* - full env access)
 ```
 
 **Key design decisions:**
@@ -73,7 +73,7 @@ MCP client sends a natural-language task
 - `OAuthProvider` (from `@cloudflare/workers-oauth-provider`) wraps `McpAgent.serve()` - the [officially recommended pattern](https://github.com/cloudflare/ai) for authenticated MCP servers on Workers.
 - Workspaces are backed by **D1** (not the DO's ephemeral SQLite), so files persist across sessions.
 - The `/view` endpoint is **public** - report links can be shared with anyone without requiring login.
-- GitPrism (`gitprism.*`) is available in every sandbox via the MCP protocol, requiring no auth from this Worker's side.
+
 
 ---
 
@@ -268,7 +268,6 @@ Available namespaces:
 |---|---|
 | `state.*` | Full filesystem: `readFile`, `writeFile`, `glob`, `searchFiles`, `replaceInFiles`, `diff`, `readJson`, `writeJson`, `walkTree`, and more |
 | `codemode.*` | Your custom TypeScript RPC tools (edit `src/tools/example.ts`) |
-| `gitprism.*` | `ingest_repo({ url, detail? })` - converts any public GitHub repo to Markdown |
 
 Files written via `state.*` persist permanently across all sessions for that user (backed by D1).
 

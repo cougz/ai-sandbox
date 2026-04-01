@@ -1,7 +1,6 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
 import { McpAgent } from "agents/mcp";
 import { DynamicWorkerExecutor, resolveProvider } from "@cloudflare/codemode";
 import { Workspace } from "@cloudflare/shell";
@@ -70,37 +69,6 @@ function buildZodSchema(schema: Record<string, SchemaFieldDef>): Record<string, 
   return result;
 }
 
-// ─── GitPrism MCP provider ────────────────────────────────────────────────────
-
-function makeGitprismProvider() {
-  return {
-    name: "gitprism",
-    tools: {
-      ingest_repo: {
-        description: [
-          "Convert any public GitHub repository into LLM-ready Markdown.",
-          "Params: { url: string, detail?: 'summary' | 'structure' | 'file-list' | 'full' }",
-          "  url    — full GitHub URL (https://github.com/org/repo) or owner/repo shorthand.",
-          "  detail — level of detail to return (default: 'full').",
-        ].join("\n"),
-        execute: async (args: unknown) => {
-          const { url, detail = "full" } = args as { url: string; detail?: string };
-          const client = new Client({ name: "ai-sandbox", version: "1.0.0" });
-          const transport = new StreamableHTTPClientTransport(new URL("https://gitprism.cloudemo.org/mcp"));
-          await client.connect(transport);
-          try {
-            const result = await client.callTool({ name: "ingest_repo", arguments: { url, detail } });
-            const content = (result.content as Array<{ type: string; text?: string }>)[0];
-            return content?.type === "text" ? content.text : JSON.stringify(content);
-          } finally {
-            await client.close();
-          }
-        },
-      },
-    },
-  };
-}
-
 const domainProvider = { tools: domainTools } as const;
 
 // ─── Built-in Tool Registry (served to admin panel via DO /internal/tools) ───
@@ -158,7 +126,6 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
   // state.*  → user's personal workspace
   // shared.* → team shared workspace (all users read/write)
   // codemode.* → domain tools
-  // gitprism.* → GitHub ingestion
   private makeProviders(ws: Workspace) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sharedProvider = Object.assign({}, stateTools(this.sharedWorkspace), { name: "shared" }) as any;
@@ -166,7 +133,6 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
       resolveProvider(stateTools(ws)),
       resolveProvider(sharedProvider),
       resolveProvider(domainProvider),
-      resolveProvider(makeGitprismProvider()),
     ];
   }
 
@@ -280,7 +246,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     this.server.tool(
       "run_code",
       toolDesc["run_code"],
-      { code: z.string().describe("JavaScript to run. Can use state.*, shared.*, codemode.*, and gitprism.*") },
+      { code: z.string().describe("JavaScript to run. Can use state.*, shared.*, and codemode.*") },
       async ({ code }) => {
         const executor = new DynamicWorkerExecutor({ loader: this.env.LOADER, globalOutbound: null });
         const { result, logs, error } = await executor.execute(code, this.makeProviders(this.workspace));

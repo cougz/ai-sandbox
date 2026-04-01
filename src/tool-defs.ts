@@ -45,9 +45,6 @@ export function buildBuiltinToolDefs(domainToolNames: string[]): ToolDef[] {
         "                readable and writable by all users.",
         "                Use this to access shared templates, configs, and team resources.",
         `  codemode.*  — domain tools: ${codemodeList}`,
-        "  gitprism.*  — ingest_repo({ url, detail? })",
-        "                Converts a public GitHub repo to Markdown.",
-        "                detail: 'summary' | 'structure' | 'file-list' | 'full'",
         "",
         "Files written via state.* persist in your personal workspace.",
         "Files written via shared.* are immediately visible to all team members.",
@@ -61,7 +58,7 @@ export function buildBuiltinToolDefs(domainToolNames: string[]): ToolDef[] {
           name: "code",
           type: "string",
           description:
-            "JavaScript to run. Can use state.*, shared.*, codemode.*, and gitprism.*",
+            "JavaScript to run. Can use state.*, shared.*, and codemode.*",
           required: true,
         },
       ],
@@ -74,7 +71,7 @@ export function buildBuiltinToolDefs(domainToolNames: string[]): ToolDef[] {
         "Like run_code, but installs npm packages at runtime so the sandbox can import them.",
         "Prefer run_code for simple tasks — it's much faster (~2ms vs ~2-10s startup).",
         "Use dynamic import(): const { chunk } = await import('lodash');",
-        "state.*, shared.*, codemode.*, and gitprism.* are available exactly as in run_code.",
+        "state.*, shared.*, and codemode.* are available exactly as in run_code.",
       ].join("\n"),
       params: [
         {
@@ -139,7 +136,7 @@ export function buildBuiltinToolDefs(domainToolNames: string[]): ToolDef[] {
         "  type: 'string' | 'number' | 'boolean' | 'array' | 'object'",
         "",
         "Code: an async arrow function receiving the tool args as an object.",
-        "  It has access to state.*, shared.*, codemode.*, gitprism.* — same as run_code.",
+        "  It has access to state.*, shared.*, and codemode.* — same as run_code.",
         "",
         "Example:",
         "  name: 'render_cf_report'",
