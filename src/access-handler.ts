@@ -1328,7 +1328,7 @@ async function initTerminal(){
       TERM_CMDS.forEach(function(c){
         var btn=document.createElement('button');
         btn.textContent=c.label;
-        btn.addEventListener('click',function(){if(ws.readyState===1){ws.send(c.cmd);term.focus();}});
+        btn.addEventListener('click',function(){if(ws.readyState===1){ws.send(enc.encode(c.cmd));term.focus();}});
         btnsEl.appendChild(btn);
       });
     }
