@@ -1287,24 +1287,41 @@ async function initTerminal(){
     var ws=new WebSocket(proto+'//'+location.host+'/dash/ws/terminal');
     termWs=ws;
     ws.binaryType='arraybuffer';
+    var enc=new TextEncoder();
+    // onopen: just register input handlers — wait for {type:"ready"} to show terminal
     ws.onopen=function(){
-      var conn=document.getElementById('terminal-connecting');
-      if(conn)conn.style.display='none';
+      term.onData(function(data){
+        // Container agent expects binary frames for keystroke input
+        if(ws.readyState===1)ws.send(enc.encode(data));
+      });
+      term.onResize(function(sz){
+        // Resize messages are JSON control frames
+        if(ws.readyState===1)try{ws.send(JSON.stringify({type:'resize',cols:sz.cols,rows:sz.rows}));}catch(e){}
+      });
     };
     ws.onmessage=function(e){
-      if(e.data instanceof ArrayBuffer)term.write(new Uint8Array(e.data));
-      else term.write(e.data);
+      if(e.data instanceof ArrayBuffer){term.write(new Uint8Array(e.data));return;}
+      try{
+        var msg=JSON.parse(e.data);
+        if(msg.type==='ready'){
+          // Container is ready: hide overlay, send current terminal size
+          var conn=document.getElementById('terminal-connecting');
+          if(conn)conn.style.display='none';
+          if(ws.readyState===1)ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
+          term.focus();
+        }else if(msg.type==='error'){
+          term.write('\\r\\n[error] '+(msg.message||'unknown')+'\\r\\n');
+        }else if(msg.type==='exit'){
+          term.write('\\r\\n[session exited with code '+(msg.code||0)+']\\r\\n');
+        }
+      }catch(e2){}
     };
-    ws.onclose=function(){term.write('\\r\\nConnection closed. Refresh to reconnect.\\r\\n');};
+    ws.onclose=function(){term.write('\\r\\n[connection closed — refresh to reconnect]\\r\\n');};
     ws.onerror=function(){
       var conn=document.getElementById('terminal-connecting');
       if(conn)conn.style.display='none';
-      term.write('\\r\\nWebSocket error.\\r\\n');
+      term.write('\\r\\n[websocket error]\\r\\n');
     };
-    term.onData(function(data){if(ws.readyState===1)ws.send(data);});
-    term.onResize(function(sz){
-      if(ws.readyState===1){try{ws.send(JSON.stringify({type:'resize',cols:sz.cols,rows:sz.rows}));}catch(e){}}
-    });
     // Render demo command buttons
     var btnsEl=document.getElementById('term-cmds');
     if(btnsEl){
