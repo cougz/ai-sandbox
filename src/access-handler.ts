@@ -1280,6 +1280,20 @@ async function initTerminal(){
     term.loadAddon(fit);
     term.open(container);
     fit.fit();
+    var enc=new TextEncoder();
+    // Intercept Ctrl+A…Ctrl+Z BEFORE the browser gets a chance to act on them
+    // (Ctrl+C = copy, Ctrl+D = close tab, etc.).  Return false so xterm does
+    // not also fire onData for the same keystroke.
+    term.attachCustomKeyEventHandler(function(e){
+      if(e.type==='keydown'&&e.ctrlKey&&!e.shiftKey&&!e.altKey&&!e.metaKey&&e.key.length===1){
+        var code=e.key.toLowerCase().charCodeAt(0)-96;
+        if(code>=1&&code<=26){
+          if(termWs&&termWs.readyState===1)termWs.send(enc.encode(String.fromCharCode(code)));
+          return false;
+        }
+      }
+      return true;
+    });
     var resizeObs=new ResizeObserver(function(){fit.fit();});
     resizeObs.observe(container);
     // Connect WebSocket — cookies are sent automatically (session auth)
@@ -1287,7 +1301,6 @@ async function initTerminal(){
     var ws=new WebSocket(proto+'//'+location.host+'/dash/ws/terminal');
     termWs=ws;
     ws.binaryType='arraybuffer';
-    var enc=new TextEncoder();
     // onopen: just register input handlers — wait for {type:"ready"} to show terminal
     ws.onopen=function(){
       term.onData(function(data){
