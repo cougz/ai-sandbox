@@ -131,58 +131,14 @@ export class ChatSession extends DurableObject<Env> {
 
   // ── Config builder ──────────────────────────────────────────────────────────
 
-  private buildOptions(publicOrigin: string, sandboxId: string, userConfig: ChatUserConfig) {
-    const model = userConfig.model || DEFAULT_MODEL;
-
-    // Only include fields that OpenCode's config schema actually accepts.
-    // "oauth" inside MCP config and "models" inside provider are not valid fields
-    // and cause OpenCode to crash on startup with empty stderr.
-    const mcpServers: Record<string, unknown> = {
-      [MCP_SERVER_NAME]: {
-        type:    "remote",
-        url:     `${this.env.PUBLIC_URL}/mcp`,
-        enabled: true,
-        // OAuth for this MCP server is handled by the OpenCode UI's built-in
-        // auth flow — no redirectUri config needed here.
-      },
-    };
-
-    for (const [name, cfg] of Object.entries(userConfig.mcpServers || {})) {
-      if (name !== MCP_SERVER_NAME) {
-        mcpServers[name] = { type: "remote", url: cfg.url, enabled: cfg.enabled };
-      }
-    }
-
-    // Pass OPENCODE_CONFIG_CONTENT via customEnv instead of the `config` field.
-    //
-    // When `config` is passed, @cloudflare/sandbox extracts the apiKey from each
-    // provider and sets it as "{PROVIDER_ID.toUpperCase()}_API_KEY".  For our
-    // "openai-compatible" provider that becomes "OPENAI-COMPATIBLE_API_KEY" —
-    // a hyphenated env var name that the container agent rejects (non-POSIX),
-    // causing OpenCode to exit immediately with empty stderr.
-    //
-    // By passing the config as customEnv.OPENCODE_CONFIG_CONTENT ourselves we
-    // skip the key-extraction logic entirely.  No apiKey needed anyway — our
-    // /chat/ai/v1 proxy is the Worker's own endpoint and ignores auth headers.
-    const opencodeConfig = {
-      provider: {
-        "openai-compatible": {
-          options: {
-            baseURL: `${publicOrigin}/chat/ai/v1`,
-            // apiKey intentionally omitted — avoids OPENAI-COMPATIBLE_API_KEY
-          },
-        },
-      },
-      mcp: mcpServers,
-    };
-
+  private buildOptions(_publicOrigin: string, _sandboxId: string, _userConfig: ChatUserConfig) {
+    // Provider, MCP, and permissions are baked into chat-config/opencode.jsonc
+    // inside the container image — no runtime env vars needed.
+    // This avoids the OPENAI-COMPATIBLE_API_KEY env var (hyphenated name
+    // rejected by the container agent) that caused immediate crashes.
     return {
       port:      OPENCODE_PORT,
       directory: WORKSPACE_DIR,
-      // config: intentionally omitted — use customEnv below instead
-      env: {
-        OPENCODE_CONFIG_CONTENT: JSON.stringify(opencodeConfig),
-      },
     };
   }
 

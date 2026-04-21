@@ -1527,7 +1527,7 @@ html,body{height:100%;overflow:hidden;background:#111;font-family:-apple-system,
 #chat-nav a{font-size:11px;color:rgba(245,230,211,.6);text-decoration:none;padding:2px 8px;border-radius:4px;transition:all .12s}
 #chat-nav a:hover,#chat-nav a.active{color:#f5e6d3;background:rgba(255,72,1,.2)}
 #chat-nav .sep{color:rgba(245,230,211,.2);font-size:14px}
-#root{position:fixed;top:36px;left:0;right:0;bottom:0}
+#root{position:fixed;top:36px;left:0;right:0;bottom:0;display:flex;flex-direction:column}
 #loader{position:fixed;top:36px;left:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#111;gap:12px;color:rgba(245,230,211,.7);font-size:13px}
 .spinner{width:32px;height:32px;border:3px solid rgba(255,72,1,.2);border-top-color:#FF4801;border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0}
 @keyframes spin{to{transform:rotate(360deg)}}

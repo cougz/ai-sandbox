@@ -1,16 +1,39 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  // Provider, model, and MCP config are injected at runtime by createOpencode()
-  // in src/chat-session.ts — these static values are just fallback defaults.
+
+  // Static runtime config baked into the container image.
+  // Provider and MCP URLs are fixed (always ai-sandbox.cloudemo.org) so
+  // there is no need to inject them at runtime via OPENCODE_CONFIG_CONTENT.
+  // This avoids the env-var issues that caused OpenCode to crash on startup.
+
   "autoupdate": false,
   "server": { "port": 4096 },
-  "share": "disabled",
   "snapshot": false,
+
   "permission": {
     "edit": "allow",
     "write": "allow",
     "bash": "allow",
     "webfetch": "allow",
     "external_directory": "deny"
+  },
+
+  // Workers AI via /chat/ai/v1 — the Worker's own endpoint, no API key needed.
+  "provider": {
+    "openai-compatible": {
+      "options": {
+        "baseURL": "https://ai-sandbox.cloudemo.org/chat/ai/v1"
+      }
+    }
+  },
+
+  // Pre-connect the ai-sandbox MCP server.
+  // OAuth is triggered automatically by OpenCode when it first connects.
+  "mcp": {
+    "ai-sandbox": {
+      "type": "remote",
+      "url": "https://ai-sandbox.cloudemo.org/mcp",
+      "enabled": true
+    }
   }
 }
