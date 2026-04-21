@@ -264,14 +264,19 @@ export async function handleRequest(
       const chatDisplayName = request.headers.get("cf-access-authenticated-user-name") ?? user.email;
       await ensureUserRecord(user.email, chatDisplayName, env);
       const sessionCookie = await createSessionCookie(user, env.COOKIE_ENCRYPTION_KEY);
-      // Kick off OpenCode startup — fire and forget.
-      // ensureServer() returns immediately; ctx.waitUntil keeps the DO alive.
-      // The chat page polls /chat/status/:sandboxId and mounts the UI when ready.
+      // Kick off OpenCode startup.
+      // ensureServer() on the DO sets startupInProgress + ctx.waitUntil, then
+      // returns VOID immediately. We must await the RPC call itself so it actually
+      // reaches the DO — an unawaited DO RPC in a Worker may be abandoned when
+      // the response is sent. The round-trip is < 1s since the method returns fast.
       const origin = new URL(request.url).origin;
       const chatSessionId = env.CHAT_SESSION.idFromName(user.email);
       const chatSession   = env.CHAT_SESSION.get(chatSessionId);
-      (chatSession as unknown as { ensureServer(id: string, o: string): void })
+      const ensureCall = (chatSession as unknown as { ensureServer(id: string, o: string): Promise<void> })
         .ensureServer(sandboxId, origin);
+      // waitUntil keeps the Worker alive long enough for the RPC delivery.
+      _ctx.waitUntil(ensureCall);
+      await ensureCall;
       return serveChatPage(user, sandboxId, request, sessionCookie);
     }
 
