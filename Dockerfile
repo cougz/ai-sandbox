@@ -37,7 +37,7 @@ RUN ARCH=$(uname -m) && \
       aarch64) OC_ARCH="arm64" ;; \
       *) echo "Unsupported arch: ${ARCH}" && exit 1 ;; \
     esac && \
-    curl -fsSL \
+    curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
       "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${OC_ARCH}.tar.gz" \
       -o /tmp/opencode.tar.gz && \
     tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode && \
