@@ -244,7 +244,7 @@ export async function handleRequest(
       const jwtAssertion = request.headers.get("cf-access-jwt-assertion");
       if (jwtAssertion && env.CHAT_AUD) {
         try {
-          await verifyAccessToken(env, jwtAssertion, env.CHAT_AUD);
+          await verifyChatJwt(jwtAssertion, env.CHAT_AUD);
         } catch (err) {
           writeLog(env, _ctx, "warn", "chat.auth.aud_fail", {
             email: user.email,
@@ -483,6 +483,51 @@ async function fetchAccessPublicKey(env: Env, kid: string): Promise<CryptoKey> {
   const jwk = keys.find((k) => k.kid === kid);
   if (!jwk) throw new Error(`No key found for kid=${kid}`);
   return crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+}
+
+/**
+ * Verify a CF Access self-hosted app JWT (cf-access-jwt-assertion header).
+ *
+ * Unlike verifyAccessToken() — which relies on ACCESS_JWKS_URL and is used
+ * for the MCP OAuth flow — this function derives the JWKS URL directly from
+ * the JWT's `iss` claim (always https://{team}.cloudflareaccess.com).
+ * This means it works even when ACCESS_JWKS_URL is not configured.
+ */
+async function verifyChatJwt(token: string, expectedAud: string): Promise<void> {
+  const parts = token.split(".");
+  if (parts.length !== 3) throw new Error("Invalid JWT");
+
+  const header  = JSON.parse(new TextDecoder().decode(fromBase64Url(parts[0])));
+  const payload = JSON.parse(new TextDecoder().decode(fromBase64Url(parts[1])));
+
+  // Derive JWKS URL from the issuer — always {team}.cloudflareaccess.com
+  const issuer = typeof payload.iss === "string" ? payload.iss : null;
+  if (!issuer) throw new Error("Missing iss claim in JWT");
+  const jwksUrl = `${issuer}/cdn-cgi/access/certs`;
+
+  const resp = await fetch(jwksUrl);
+  if (!resp.ok) throw new Error(`Failed to fetch JWKS from ${jwksUrl}: ${resp.status}`);
+  const { keys } = await resp.json<{ keys: (JsonWebKey & { kid: string })[] }>();
+  const jwk = keys.find(k => k.kid === header.kid);
+  if (!jwk) throw new Error(`No key found for kid=${header.kid}`);
+
+  const key = await crypto.subtle.importKey(
+    "jwk", jwk,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false, ["verify"],
+  );
+  const valid = await crypto.subtle.verify(
+    "RSASSA-PKCS1-v1_5", key,
+    fromBase64Url(parts[2]),
+    new TextEncoder().encode(`${parts[0]}.${parts[1]}`),
+  );
+  if (!valid) throw new Error("JWT signature invalid");
+  if (payload.exp < Math.floor(Date.now() / 1000)) throw new Error("JWT expired");
+
+  const aud: string[] = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  if (!aud.includes(expectedAud)) {
+    throw new Error(`JWT audience mismatch (got: ${aud.join(", ")})`);
+  }
 }
 
 /** Decode a base64url string to a Uint8Array (no Node.js Buffer required). */
