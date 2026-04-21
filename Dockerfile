@@ -1,6 +1,6 @@
 # The cloudflare/sandbox base image ships the container agent that handles
 # /ws/pty (terminal), /exec, /files, etc. on port 3000.
-# Version 0.8.9 includes the @cloudflare/sandbox/opencode integration support.
+# Version 0.8.9 includes @cloudflare/sandbox/opencode integration support.
 FROM docker.io/cloudflare/sandbox:0.8.9
 
 # OpenCode binary location
