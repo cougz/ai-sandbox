@@ -54,6 +54,25 @@ function ts(): string {
   return new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
 }
 
+/**
+ * Structured log — matches the writeLog() format in access-handler.ts so
+ * every event appears as a proper JSON record in Cloudflare Observability.
+ * Search for component:"chat-session" in the Observability tab.
+ */
+function structuredLog(
+  level: "info" | "warn" | "error",
+  message: string,
+  data?: Record<string, unknown>,
+): void {
+  console.log(JSON.stringify({
+    level,
+    message,
+    component: "chat-session",
+    timestamp: new Date().toISOString(),
+    ...data,
+  }));
+}
+
 // ─── ChatSession DO ───────────────────────────────────────────────────────────
 
 export class ChatSession extends DurableObject<Env> {
@@ -71,9 +90,16 @@ export class ChatSession extends DurableObject<Env> {
 
   // ── Logging helpers ─────────────────────────────────────────────────────────
 
-  private log(sandboxId: string, msg: string): void {
+  private log(
+    sandboxId: string,
+    msg: string,
+    level: "info" | "warn" | "error" = "info",
+    extra?: Record<string, unknown>,
+  ): void {
+    // Structured JSON → Cloudflare Observability (searchable by component, sandboxId, level)
+    structuredLog(level, msg, { sandboxId, ...extra });
+    // Ring-buffer for the in-browser loading screen
     const line = `[${ts()}] ${msg}`;
-    console.log(`[ChatSession:${sandboxId.slice(0, 12)}] ${msg}`);
     const s = this.getOrInitStatus(sandboxId);
     s.log.push(line);
     if (s.log.length > 30) s.log.shift();
@@ -208,11 +234,11 @@ export class ChatSession extends DurableObject<Env> {
       .catch((err: unknown) => {
         this.startupInProgress.delete(sandboxId);
         const msg = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
         const s = this.getOrInitStatus(sandboxId);
         s.state = "failed";
         s.error = msg;
-        this.log(sandboxId, `STARTUP FAILED: ${msg}`);
-        console.error(`[ChatSession] startup failed for ${sandboxId}:`, msg);
+        this.log(sandboxId, `STARTUP FAILED: ${msg}`, "error", { stack });
       });
 
     this.ctx.waitUntil(startup);
@@ -221,20 +247,27 @@ export class ChatSession extends DurableObject<Env> {
   private async _doStart(sandboxId: string, publicOrigin: string): Promise<void> {
     this.log(sandboxId, "Reading user config from DO storage...");
     const userConfig = await this.getUserConfig();
-    this.log(sandboxId, `Config: model=${userConfig.model || DEFAULT_MODEL}`);
+    const model = userConfig.model || DEFAULT_MODEL;
+    this.log(sandboxId, `User config loaded`, "info", { model });
 
     const options = this.buildOptions(publicOrigin, sandboxId, userConfig);
-    this.log(sandboxId, `OpenCode options built — port=${options.port}, dir=${options.directory}`);
-    this.log(sandboxId, `Provider baseURL=${(options.config?.provider?.["openai-compatible"] as {options?:{baseURL?:string}})?.options?.baseURL ?? "?"}`);
-    this.log(sandboxId, `MCP servers: ${Object.keys(options.config?.mcp ?? {}).join(", ")}`);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const baseURL = (options.config?.provider?.["openai-compatible"] as any)?.options?.baseURL ?? "?";
+    const mcpKeys = Object.keys(options.config?.mcp ?? {});
+    this.log(sandboxId, `Options built`, "info", {
+      port: options.port,
+      directory: options.directory,
+      providerBaseURL: baseURL,
+      mcpServers: mcpKeys,
+    });
 
     this.log(sandboxId, "Calling getSandbox()...");
     const sandbox = getSandbox(this.sandboxNs, sandboxId);
-    this.log(sandboxId, "Got sandbox stub — calling createOpencodeServer() (may take up to 180s)...");
+    this.log(sandboxId, "Calling createOpencodeServer() — waits up to 180s for container + OpenCode...");
 
     const server = await createOpencodeServer(sandbox, options);
     this.servers.set(sandboxId, { server, publicOrigin });
-    this.log(sandboxId, `createOpencodeServer() returned — port=${server.port}`);
+    this.log(sandboxId, `createOpencodeServer() completed`, "info", { port: server.port });
   }
 
   resetInstance(sandboxId: string): void {
