@@ -27,4 +27,9 @@ interface Env {
   // Full type is `Ai` from @cloudflare/workers-types; any until wrangler types regenerated.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   AI: any;
+
+  // AUD tag of the /chat CF Access self-hosted application.
+  // Used to validate the cf-access-jwt-assertion header on page load.
+  // Set via wrangler.jsonc vars (not a secret — AUD tags are non-sensitive).
+  CHAT_AUD: string;
 }

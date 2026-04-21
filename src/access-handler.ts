@@ -238,6 +238,21 @@ export async function handleRequest(
 
     // Serve the embedded OpenCode web UI
     if (pathname === "/chat" || pathname === "/chat/") {
+      // Validate the CF Access JWT audience for /chat on every initial page load
+      // (the jwt-assertion header is only present on browser navigation, not on
+      // subsequent fetch() calls which use the session cookie instead).
+      const jwtAssertion = request.headers.get("cf-access-jwt-assertion");
+      if (jwtAssertion && env.CHAT_AUD) {
+        try {
+          await verifyAccessToken(env, jwtAssertion, env.CHAT_AUD);
+        } catch (err) {
+          writeLog(env, _ctx, "warn", "chat.auth.aud_fail", {
+            email: user.email,
+            error: String(err),
+          });
+          return new Response("Forbidden", { status: 403 });
+        }
+      }
       const sessionCookie = await createSessionCookie(user, env.COOKIE_ENCRYPTION_KEY);
       // Eagerly start OpenCode in the container before returning the page so the
       // UI doesn't hit a cold 503 on first load.
@@ -476,7 +491,11 @@ function fromBase64Url(s: string): Uint8Array {
   return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
 }
 
-async function verifyAccessToken(env: Env, token: string): Promise<Record<string, string>> {
+async function verifyAccessToken(
+  env: Env,
+  token: string,
+  expectedAud?: string,
+): Promise<Record<string, string>> {
   const parts = token.split(".");
   if (parts.length !== 3) throw new Error("Invalid JWT");
   const header  = JSON.parse(new TextDecoder().decode(fromBase64Url(parts[0])));
@@ -489,6 +508,13 @@ async function verifyAccessToken(env: Env, token: string): Promise<Record<string
   );
   if (!valid) throw new Error("JWT signature invalid");
   if (payload.exp < Math.floor(Date.now() / 1000)) throw new Error("JWT expired");
+  if (expectedAud) {
+    // payload.aud can be a string or an array depending on the issuer
+    const aud: string[] = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+    if (!aud.includes(expectedAud)) {
+      throw new Error(`JWT audience mismatch (got: ${aud.join(", ")})`);
+    }
+  }
   return payload;
 }
 

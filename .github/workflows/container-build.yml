@@ -43,9 +43,10 @@ jobs:
           # No cache: package-lock.json is gitignored in this project
 
       # Install only wrangler — that is all this job needs.
-      # We use the version pinned in package.json to stay in sync with Workers Builds.
+      # --legacy-peer-deps bypasses the zod v3/v4 peer dep conflict in package.json
+      # which npm 10 would otherwise reject.
       - name: Install wrangler
-        run: npm install --no-save wrangler
+        run: npm install --no-save --legacy-peer-deps wrangler
 
       # Tag format: vYYYY-MM-DD-<sha7>
       # Lexical sort means the latest tag is always last, which is what

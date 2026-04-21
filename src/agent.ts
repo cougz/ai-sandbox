@@ -29,9 +29,10 @@ export interface Env extends Cloudflare.Env {
   // ChatSession DO — manages OpenCode lifecycle per user for /chat
   CHAT_SESSION: DurableObjectNamespace;
   // Workers AI binding — used by /chat/ai/v1/* proxy (env.AI.run())
-  // Type is `Ai` from @cloudflare/workers-types; typed as any until `wrangler types` runs
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   AI: any;
+  // AUD tag of the /chat CF Access self-hosted application (set in wrangler.jsonc vars)
+  CHAT_AUD: string;
   // Runtime secrets — set via `wrangler secret put`, not in wrangler.jsonc bindings
   ADMIN_EMAILS: string;
   ADMIN_SECRET: string;

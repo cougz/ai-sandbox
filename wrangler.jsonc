@@ -52,7 +52,10 @@
   ],
 
   "vars": {
-    "PUBLIC_URL": "https://ai-sandbox.cloudemo.org"
+    "PUBLIC_URL": "https://ai-sandbox.cloudemo.org",
+    // AUD tag of the /chat CF Access self-hosted application.
+    // Validated against cf-access-jwt-assertion on every /chat page load.
+    "CHAT_AUD": "1b7ee3f30455d014d2fe3a5e1f946927dd0a5d32d0a1d650783f408a7a3ce4dc"
   },
 
   // Static assets for the embedded OpenCode web UI (JS/CSS bundle built by
