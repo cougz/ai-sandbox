@@ -23,7 +23,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     htop \
     net-tools \
     iputils-ping \
-    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install OpenCode by downloading the pinned release zip directly from GitHub.
@@ -38,12 +37,11 @@ RUN ARCH=$(uname -m) && \
       *) echo "Unsupported arch: ${ARCH}" && exit 1 ;; \
     esac && \
     curl -fsSL \
-      "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${OC_ARCH}.zip" \
-      -o /tmp/opencode.zip && \
-    unzip -q /tmp/opencode.zip -d /tmp/opencode-bin && \
-    mv /tmp/opencode-bin/opencode /usr/local/bin/opencode && \
+      "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${OC_ARCH}.tar.gz" \
+      -o /tmp/opencode.tar.gz && \
+    tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode && \
     chmod +x /usr/local/bin/opencode && \
-    rm -rf /tmp/opencode.zip /tmp/opencode-bin && \
+    rm -f /tmp/opencode.tar.gz && \
     opencode --version
 
 # Copy the default OpenCode config (provider/model/MCP are injected at runtime
