@@ -153,22 +153,14 @@ export class ChatSession extends DurableObject<Env> {
       }
     }
 
+    // DEBUG: pass no config at all to test if OpenCode starts with container defaults.
+    // The container's opencode.jsonc will be used (port 4096, autoupdate: false, permissions).
+    // Provider + MCP will be configured manually through the UI once we confirm startup works.
+    void model; void mcpServers; // suppress unused warning
     return {
       port:      OPENCODE_PORT,
       directory: WORKSPACE_DIR,
-      config: {
-        model: `openai-compatible/${model}`,
-        provider: {
-          "openai-compatible": {
-            options: {
-              baseURL: `${publicOrigin}/chat/ai/v1`,
-              apiKey:  "workers-ai",
-              // No "models" dict — not a valid OpenCode provider config field.
-            },
-          },
-        },
-        mcp: mcpServers,
-      },
+      // config intentionally omitted — testing whether OpenCode itself starts
     };
   }
 
@@ -251,14 +243,9 @@ export class ChatSession extends DurableObject<Env> {
     this.log(sandboxId, `User config loaded`, "info", { model });
 
     const options = this.buildOptions(publicOrigin, sandboxId, userConfig);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const baseURL = (options.config?.provider?.["openai-compatible"] as any)?.options?.baseURL ?? "?";
-    const mcpKeys = Object.keys(options.config?.mcp ?? {});
     this.log(sandboxId, `Options built`, "info", {
       port: options.port,
       directory: options.directory,
-      providerBaseURL: baseURL,
-      mcpServers: mcpKeys,
     });
 
     this.log(sandboxId, "Calling getSandbox()...");
