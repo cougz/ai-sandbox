@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "ai-sandbox-worker",
+  "account_id": "9c0e55ad8906a05169a1259400c71e5b",
   "main": "src/agent.ts",
   "compatibility_date": "2026-03-01",
   "compatibility_flags": ["nodejs_compat"],
