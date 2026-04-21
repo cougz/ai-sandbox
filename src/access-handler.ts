@@ -254,20 +254,24 @@ export async function handleRequest(
         }
       }
       const sessionCookie = await createSessionCookie(user, env.COOKIE_ENCRYPTION_KEY);
-      // Eagerly start OpenCode in the container before returning the page so the
-      // UI doesn't hit a cold 503 on first load.
-      try {
-        const chatSessionId = env.CHAT_SESSION.idFromName(user.email);
-        const chatSession   = env.CHAT_SESSION.get(chatSessionId);
-        const origin = new URL(request.url).origin;
-        await (chatSession as unknown as { ensureServer(id: string, o: string): Promise<void> })
-          .ensureServer(sandboxId, origin);
-      } catch (err) {
-        writeLog(env, _ctx, "warn", "chat.ensure_server.fail", {
-          email: user.email, error: String(err),
-        });
-      }
+      // Kick off OpenCode startup — fire and forget.
+      // ensureServer() returns immediately; ctx.waitUntil keeps the DO alive.
+      // The chat page polls /chat/status/:sandboxId and mounts the UI when ready.
+      const origin = new URL(request.url).origin;
+      const chatSessionId = env.CHAT_SESSION.idFromName(user.email);
+      const chatSession   = env.CHAT_SESSION.get(chatSessionId);
+      (chatSession as unknown as { ensureServer(id: string, o: string): void })
+        .ensureServer(sandboxId, origin);
       return serveChatPage(user, sandboxId, request, sessionCookie);
+    }
+
+    // OpenCode readiness check — polled by the loading screen
+    if (pathname === `/chat/status/${sandboxId}`) {
+      const chatSessionId = env.CHAT_SESSION.idFromName(user.email);
+      const chatSession   = env.CHAT_SESSION.get(chatSessionId);
+      const status = await (chatSession as unknown as { getStatus(id: string): string })
+        .getStatus(sandboxId);
+      return Response.json({ status });
     }
 
     // Proxy all /chat/oc/* to the OpenCode container
@@ -1498,37 +1502,84 @@ function serveChatPage(
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NiA2NiI+PHJlY3Qgd2lkdGg9IjY2IiBoZWlnaHQ9IjY2IiByeD0iOSIgZmlsbD0iI0ZGNDgwMSIvPjxnIHRyYW5zZm9ybT0idHJhbnNsYXRlKDAsMTgpIiBmaWxsPSJ3aGl0ZSI+PHBhdGggZD0iTTUyLjY4OCAxMy4wMjhjLS4yMiAwLS40MzcuMDA4LS42NTQuMDE1YS4zLjMgMCAwIDAtLjEwMi4wMjQuMzcuMzcgMCAwIDAtLjIzNi4yNTVsLS45MyAzLjI0OWMtLjQwMSAxLjM5Ny0uMjUyIDIuNjg3LjQyMiAzLjYzNC42MTguODc2IDEuNjQ2IDEuMzkgMi44OTQgMS40NWw1LjA0NS4zMDZhLjQ1LjQ1IDAgMCAxIC40MzUuNDEuNS41IDAgMCAxLS4wMjUuMjIzLjY0LjY0IDAgMCAxLS41NDcuNDI2bC01LjI0Mi4zMDZjLTIuODQ4LjEzMi01LjkxMiAyLjQ1Ni02Ljk4NyA1LjI5bC0uMzc4IDFhLjI4LjI4IDAgMCAwIC4yNDguMzgyaDE4LjA1NGEuNDguNDggMCAwIDAgLjQ2NC0uMzVjLjMyLTEuMTUzLjQ4Mi0yLjM0NC40OC0zLjU0IDAtNy4yMi01Ljc5LTEzLjA3Mi0xMi45MzMtMTMuMDcyTTQ0LjgwNyAyOS41NzhsLjMzNC0xLjE3NWMuNDAyLTEuMzk3LjI1My0yLjY4Ny0uNDItMy42MzQtLjYyLS44NzYtMS42NDctMS4zOS0yLjg5Ni0xLjQ1bC0yMy42NjUtLjMwNmEuNDcuNDcgMCAwIDEtLjM3NC0uMTk5LjUuNSAwIDAgMS0uMDUyLS40MzQuNjQuNjQgMCAwIDEgLjU1Mi0uNDI2bDIzLjg4Ni0uMzA2YzIuODM2LS4xMzEgNS45LTIuNDU2IDYuOTc1LTUuMjlsMS4zNjItMy42YS45LjkgMCAwIDAgLjA0LS40NzdDNDguOTk3IDUuMjU5IDQyLjc4OSAwIDM1LjM2NyAwYy02Ljg0MiAwLTEyLjY0NyA0LjQ2Mi0xNC43MyAxMC42NjVhNi45MiA2LjkyIDAgMCAwLTQuOTExLTEuMzc0Yy0zLjI4LjMzLTUuOTIgMy4wMDItNi4yNDYgNi4zMThhNy4yIDcuMiAwIDAgMCAuMTggMi40NzJDNC4zIDE4LjI0MSAwIDIyLjY3OSAwIDI4LjEzM3EwIC43NC4xMDYgMS40NTNhLjQ2LjQ2IDAgMCAwIC40NTcuNDAyaDQzLjcwNGEuNTcuNTcgMCAwIDAgLjU0LS40MTgiLz48L2c+PC9zdmc+">
 <link rel="stylesheet" href="/opencode-ui/opencode-mount.css">
 <style>
-html,body,#root{margin:0;padding:0;width:100%;height:100%;overflow:hidden}
-#root{display:flex;flex-direction:column}
-/* Dashboard quick-link nav bar */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:#111;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 #chat-nav{position:fixed;top:0;left:0;right:0;height:36px;background:#1C0A00;display:flex;align-items:center;gap:12px;padding:0 16px;z-index:9999;border-bottom:1px solid #3a1500}
-#chat-nav a{font-size:11px;color:rgba(245,230,211,.6);text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:2px 8px;border-radius:4px;transition:all .12s}
+#chat-nav a{font-size:11px;color:rgba(245,230,211,.6);text-decoration:none;padding:2px 8px;border-radius:4px;transition:all .12s}
 #chat-nav a:hover,#chat-nav a.active{color:#f5e6d3;background:rgba(255,72,1,.2)}
 #chat-nav .sep{color:rgba(245,230,211,.2);font-size:14px}
-#root{padding-top:36px}
+#root{position:fixed;top:36px;left:0;right:0;bottom:0}
+#loader{position:fixed;top:36px;left:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#111;gap:16px;color:rgba(245,230,211,.7);font-size:13px}
+.spinner{width:32px;height:32px;border:3px solid rgba(255,72,1,.2);border-top-color:#FF4801;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#loader-msg{font-size:12px;color:rgba(245,230,211,.4)}
 </style>
 </head>
 <body>
 <nav id="chat-nav">
-  <a href="/dash">Dashboard</a>
+  <a href="/dash" id="nav-dash">Dashboard</a>
   <span class="sep">|</span>
   <a href="/chat" class="active">Chat</a>
   <span class="sep">|</span>
-  <span style="font-size:11px;color:rgba(245,230,211,.4);font-family:monospace">${escapeHtml(user.email)}</span>
+  <span style="font-size:11px;color:rgba(245,230,211,.3);font-family:monospace">${escapeHtml(user.email)}</span>
 </nav>
+<div id="loader">
+  <div class="spinner"></div>
+  <div>Starting AI Sandbox…</div>
+  <div id="loader-msg">Spinning up your container</div>
+</div>
 <div id="root"></div>
 <script type="module">
-  import("/opencode-ui/opencode-mount.js")
-    .then(({ mount }) => {
-      mount(document.getElementById("root"), {
-        serverUrl:  ${JSON.stringify(serverUrl)},
-        directory:  ${JSON.stringify(directory)},
-      });
-    })
-    .catch((err) => {
-      document.getElementById("root").textContent = "Failed to load OpenCode UI: " + err.message;
-      console.error("[chat] Failed to load OpenCode UI:", err);
-    });
+  // Intercept Dashboard link before SolidJS HashRouter's global click handler
+  document.getElementById("nav-dash").addEventListener("click", (e) => {
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    window.location.href = "/dash";
+  }, true);
+
+  const serverUrl  = ${JSON.stringify(serverUrl)};
+  const statusUrl  = ${JSON.stringify(`/chat/status/${sandboxId}`)};
+  const directory  = ${JSON.stringify(directory)};
+  let mounted = false;
+
+  async function isReady() {
+    try {
+      // First check our status endpoint (fast — DO state check, no container request)
+      const s = await fetch(statusUrl, { signal: AbortSignal.timeout(4000) });
+      if (s.ok) {
+        const { status } = await s.json();
+        if (status === "ready") return true;
+        document.getElementById("loader-msg").textContent =
+          status === "starting" ? "OpenCode is starting…" : "Waiting for container…";
+        return false;
+      }
+    } catch { /* network error — keep retrying */ }
+    return false;
+  }
+
+  async function mountUI() {
+    const loader = document.getElementById("loader");
+    loader.querySelector("div:nth-child(2)").textContent = "Loading interface…";
+    document.getElementById("loader-msg").textContent = "";
+    try {
+      const { mount } = await import("/opencode-ui/opencode-mount.js");
+      mount(document.getElementById("root"), { serverUrl, directory });
+      loader.style.display = "none";
+      mounted = true;
+    } catch (err) {
+      loader.querySelector("div:nth-child(2)").textContent = "Failed to load OpenCode UI";
+      document.getElementById("loader-msg").textContent = err.message;
+    }
+  }
+
+  async function poll() {
+    while (!mounted) {
+      if (await isReady()) { await mountUI(); return; }
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+
+  poll();
 </script>
 </body>
 </html>`;

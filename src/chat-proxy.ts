@@ -45,11 +45,11 @@ function matchProxyTarget(url: URL): ProxyTarget | null {
 
   // /chat/oc/{sandboxId}/... → standard OpenCode API proxy
   if (pathname.startsWith("/chat/oc/")) {
-    const after     = pathname.slice("/chat/oc/".length);
-    const slashIdx  = after.indexOf("/");
-    if (slashIdx === -1) return null;
-    const sandboxId = after.slice(0, slashIdx);
-    const rest      = after.slice(slashIdx);
+    const after    = pathname.slice("/chat/oc/".length);
+    const slashIdx = after.indexOf("/");
+    // No trailing path — treat as root (e.g. OpenCode connectivity check)
+    const sandboxId = slashIdx === -1 ? after : after.slice(0, slashIdx);
+    const rest      = slashIdx === -1 ? "/"  : after.slice(slashIdx);
     if (!sandboxId) return null;
     return { sandboxId, rest, isOAuth: false };
   }
