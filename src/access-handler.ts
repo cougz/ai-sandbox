@@ -205,6 +205,12 @@ export async function handleRequest(
   if (pathname === "/dash") {
     const user = await authenticateRequest(request, env);
     if (!user) return new Response("Unauthorized", { status: 401 });
+    // Auto-provision user record on first visit via CF Access.
+    // Users who connect only through /dash never go through /callback (the MCP
+    // OAuth flow), so they would otherwise never get a USER_REGISTRY entry,
+    // resulting in "Invalid Date" and "undefined files" in the dashboard.
+    const displayName = request.headers.get("cf-access-authenticated-user-name") ?? user.email;
+    await ensureUserRecord(user.email, displayName, env);
     // Issue a signed session cookie so that the dashboard's JavaScript fetch()
     // calls to /api/* can authenticate without CF Access headers.
     const sessionCookie = await createSessionCookie(user, env.COOKIE_ENCRYPTION_KEY);
@@ -253,6 +259,10 @@ export async function handleRequest(
           return new Response("Forbidden", { status: 403 });
         }
       }
+      // Auto-provision user record (same reason as /dash — CF Access users
+      // never go through /callback, so no record exists otherwise).
+      const chatDisplayName = request.headers.get("cf-access-authenticated-user-name") ?? user.email;
+      await ensureUserRecord(user.email, chatDisplayName, env);
       const sessionCookie = await createSessionCookie(user, env.COOKIE_ENCRYPTION_KEY);
       // Kick off OpenCode startup — fire and forget.
       // ensureServer() returns immediately; ctx.waitUntil keeps the DO alive.
