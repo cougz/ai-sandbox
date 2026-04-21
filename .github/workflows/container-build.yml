@@ -6,10 +6,10 @@ name: Build & Push Container Image
 # After this workflow completes, the next Workers Builds deploy will pick up the
 # new image tag automatically via scripts/patch-container-image.js.
 #
-# Required GitHub Actions secrets:
-#   CLOUDFLARE_API_TOKEN  — token with "Cloudflare Workers Containers: Edit" permission
+# Required GitHub Actions secrets (Settings → Secrets and variables → Actions):
+#   CLOUDFLARE_API_TOKEN  — API token with "Cloudflare Workers Containers: Edit" permission
 #
-# Required GitHub Actions variables (Settings → Variables):
+# Required GitHub Actions variables (Settings → Secrets and variables → Variables):
 #   CLOUDFLARE_ACCOUNT_ID — your Cloudflare account ID
 
 on:
@@ -28,7 +28,8 @@ on:
 jobs:
   build-container:
     name: Build & push ai-sandbox-chat
-    runs-on: ubuntu-latest          # GitHub-hosted runners ship Docker out of the box
+    runs-on: ubuntu-latest    # GitHub-hosted runners ship Docker out of the box
+
     permissions:
       contents: read
 
@@ -40,13 +41,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
+          # No cache: package-lock.json is gitignored in this project
 
-      - name: Install dependencies
-        run: npm ci
+      # Install only wrangler — that is all this job needs.
+      # We use the version pinned in package.json to stay in sync with Workers Builds.
+      - name: Install wrangler
+        run: npm install --no-save wrangler
 
-      # Tag format: vYYYY-MM-DD[-N] — lexical sort means the latest tag is always last,
-      # which is what patch-container-image.js relies on when it calls `slice(-1)[0]`.
+      # Tag format: vYYYY-MM-DD-<sha7>
+      # Lexical sort means the latest tag is always last, which is what
+      # scripts/patch-container-image.js relies on via slice(-1)[0].
       - name: Derive image tag
         id: tag
         run: echo "value=v$(date -u +%Y-%m-%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
@@ -66,4 +70,4 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Image:** \`ai-sandbox-chat:${{ steps.tag.outputs.value }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "The next Workers Builds deploy will use this image automatically." >> "$GITHUB_STEP_SUMMARY"
+          echo "The next Workers Builds deploy will pick up this image automatically." >> "$GITHUB_STEP_SUMMARY"
