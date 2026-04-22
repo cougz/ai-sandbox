@@ -882,44 +882,49 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Pro
     }
   }
 
-  // ── GET /tools — list all tools (built-in static + custom from shared ws) ──
-  // Scans /tools/{name}/tool.json (directory format, new standard) and
-  // /tools/{name}.json (flat format, backward compat). Directory takes precedence.
+  // ── GET /tools — list all tools (built-in + global shared + personal) ────
+  // Three tiers:
+  //   builtin  — hardcoded in tool-defs.ts, shipped with the Worker
+  //   global   — shared workspace /tools/*.json, available to all users
+  //   personal — current user's workspace /tools/*.json, only for this user
   if (method === "GET" && path === "/tools") {
-    const ws = makeSharedWorkspace(env);
-    let customTools: unknown[] = [];
-    try {
-      const entries = await ws.glob("/tools/**") as Array<{ path: string; type: string }>;
-      const dir  = entries.filter((e) => e.type === "file" && /^\/tools\/[^/]+\/tool\.json$/.test(e.path));
-      const flat = entries.filter((e) => e.type === "file" && /^\/tools\/[^/]+\.json$/.test(e.path));
-      const seen = new Set<string>();
+    const scanWorkspace = async (ws: Workspace, actions: string[]) => {
       const loaded: unknown[] = [];
-      for (const entry of [...dir, ...flat]) {
-        const m = entry.path.match(/^\/tools\/([^/]+)(?:\/tool)?\.json$/);
-        if (!m || seen.has(m[1])) continue;
-        const raw = await ws.readFile(entry.path);
-        if (!raw) continue;
-        try {
-          const def = JSON.parse(raw);
-          // Add actions based on role
-          (def as Record<string, unknown>).actions = user.role === "admin" 
-            ? ["view", "edit", "delete"] 
-            : ["view"];
-          // For directory tools, list supporting files
-          if (/^\/tools\/[^/]+\/tool\.json$/.test(entry.path)) {
-            const toolDir = entry.path.replace("/tool.json", "");
-            (def as Record<string, unknown>)._files = entries
-              .filter((e) => e.type === "file" && e.path.startsWith(toolDir + "/") && e.path !== entry.path)
-              .map((e) => e.path);
-          }
-          loaded.push(def);
-          seen.add(m[1]);
-        } catch { /* skip malformed */ }
-      }
-      customTools = loaded;
-    } catch { /* shared workspace empty or unavailable */ }
-    writeLog(env, ctx, "info", "admin.tools.list", { builtin: ADMIN_BUILTIN_TOOLS.length, custom: customTools.length });
-    return jsonResp({ builtin: ADMIN_BUILTIN_TOOLS, custom: customTools });
+      try {
+        const entries = await ws.glob("/tools/**") as Array<{ path: string; type: string }>;
+        const dir  = entries.filter((e) => e.type === "file" && /^\/tools\/[^/]+\/tool\.json$/.test(e.path));
+        const flat = entries.filter((e) => e.type === "file" && /^\/tools\/[^/]+\.json$/.test(e.path));
+        const seen = new Set<string>();
+        for (const entry of [...dir, ...flat]) {
+          const m = entry.path.match(/^\/tools\/([^/]+)(?:\/tool)?\.json$/);
+          if (!m || seen.has(m[1])) continue;
+          const raw = await ws.readFile(entry.path);
+          if (!raw) continue;
+          try {
+            const def = JSON.parse(raw);
+            (def as Record<string, unknown>).actions = actions;
+            if (/^\/tools\/[^/]+\/tool\.json$/.test(entry.path)) {
+              const toolDir = entry.path.replace("/tool.json", "");
+              (def as Record<string, unknown>)._files = entries
+                .filter((e) => e.type === "file" && e.path.startsWith(toolDir + "/") && e.path !== entry.path)
+                .map((e) => e.path);
+            }
+            loaded.push(def);
+            seen.add(m[1]);
+          } catch { /* skip malformed */ }
+        }
+      } catch { /* workspace empty or unavailable */ }
+      return loaded;
+    };
+
+    const adminActions = ["view", "edit", "delete"];
+    const viewActions  = ["view"];
+
+    const globalTools   = await scanWorkspace(makeSharedWorkspace(env), user.role === "admin" ? adminActions : viewActions);
+    const personalTools = await scanWorkspace(makeWorkspace(user.email, env), adminActions);
+
+    writeLog(env, ctx, "info", "admin.tools.list", { builtin: ADMIN_BUILTIN_TOOLS.length, global: globalTools.length, personal: personalTools.length });
+    return jsonResp({ builtin: ADMIN_BUILTIN_TOOLS, global: globalTools, personal: personalTools });
   }
 
   // ── Unified file-browser endpoints ─────────────────────────────────────────
@@ -1160,8 +1165,8 @@ tr:hover td{background:var(--cf-bg-hover)}
       </div>
     </div>
     <div id="sec-tools" class="section">
-      <div class="sec-title">Global Tools</div>
-      <div class="sec-sub">All tools available in the AI Sandbox &mdash; built-in and custom tools from the Shared Workspace (<code style="font-size:11px;font-family:monospace;background:rgba(235,213,193,.4);padding:1px 5px;border-radius:3px">/tools/*.json</code>). Custom tools load for every user at session start.</div>
+      <div class="sec-title">Tools</div>
+      <div class="sec-sub">All tools available in the AI Sandbox &mdash; built-in tools shipped with the Worker, global tools from the Shared Workspace (available to all users), and personal tools from your workspace.</div>
       <div id="tools-body"><div class="empty">Loading&hellip;</div></div>
     </div>
     <div id="sec-files" class="section">
@@ -1320,11 +1325,17 @@ function renderTools(data){
   var html='';
   html+='<div class="tools-group">Built-in</div>';
   (data.builtin||[]).forEach(function(t){html+=toolCard(t,'builtin');});
-  html+='<div class="tools-group">Custom &mdash; Shared Workspace</div>';
-  if(data.custom&&data.custom.length){
-    data.custom.forEach(function(t){html+=toolCard(t,'custom');});
+  html+='<div class="tools-group">Global &mdash; Shared Workspace</div>';
+  if(data.global&&data.global.length){
+    data.global.forEach(function(t){html+=toolCard(t,'global');});
   }else{
-    html+='<div style="font-size:13px;color:var(--cf-text-subtle);padding:4px 0 8px">No custom tools found. Place tool definitions at <code style="font-family:monospace">/tools/{name}/tool.json</code> (directory format) or <code style="font-family:monospace">/tools/{name}.json</code> (flat) in the Shared Workspace.</div>';
+    html+='<div style="font-size:13px;color:var(--cf-text-subtle);padding:4px 0 8px">No global tools found. Place tool definitions at <code style="font-family:monospace">/tools/{name}/tool.json</code> (directory format) or <code style="font-family:monospace">/tools/{name}.json</code> (flat) in the Shared Workspace.</div>';
+  }
+  html+='<div class="tools-group">Personal &mdash; My Workspace</div>';
+  if(data.personal&&data.personal.length){
+    data.personal.forEach(function(t){html+=toolCard(t,'personal');});
+  }else{
+    html+='<div style="font-size:13px;color:var(--cf-text-subtle);padding:4px 0 8px">No personal tools. Use <code style="font-family:monospace">tool_create</code> or save tool definitions to <code style="font-family:monospace">/tools/{name}/tool.json</code> in your workspace.</div>';
   }
   document.getElementById('tools-body').innerHTML=html;
   document.getElementById('tools-body').querySelectorAll('.param-toggle').forEach(function(btn){
@@ -1348,16 +1359,24 @@ function renderTools(data){
 function toolCard(t,type){
   var raw=t.params||t.schema||[];
   var params=Array.isArray(raw)?raw:Object.entries(raw).map(function(e){return{name:e[0],type:(e[1].type||'string'),description:(e[1].description||''),required:!e[1].optional};});
-  var badge=type==='builtin'?'<span class="badge badge-g">built-in</span>':'<span class="badge badge-m">custom</span>';
+  var badge=type==='builtin'?'<span class="badge badge-g">built-in</span>':type==='global'?'<span class="badge badge-g">global</span>':'<span class="badge badge-m">personal</span>';
   var actions=params.length?'<button class="sm param-toggle" style="margin-left:auto">Params &#9656;</button>':'<span style="margin-left:auto"></span>';
-  if(type==='custom'&&IS_ADMIN){
+  if((type==='global'||type==='personal')&&IS_ADMIN){
     if(t._files&&t._files.length){
       var toolDir=t._files[0].substring(0,t._files[0].lastIndexOf('/'));
       actions+=' <button class="sm files-toggle">Files &#9656;</button>';
       actions+=' <button class="sm" data-browse-tool="'+esc(t.name)+'" data-browse-dir="'+esc(toolDir)+'">Browse</button>';
       actions+=' <button class="sm" data-edit-json="'+esc(toolDir+'/tool.json')+'">Edit JSON</button>';
     }
-    actions+=' <button class="sm danger" data-del-tool="'+esc(t.name)+'">Delete</button>';
+    if(type==='global')actions+=' <button class="sm danger" data-del-tool="'+esc(t.name)+'">Delete</button>';
+  }
+  if(type==='personal'){
+    if(t._files&&t._files.length){
+      var ptoolDir=t._files[0].substring(0,t._files[0].lastIndexOf('/'));
+      if(!actions.includes('files-toggle')){
+        actions+=' <button class="sm files-toggle">Files &#9656;</button>';
+      }
+    }
   }
   var rows='';
   params.forEach(function(p){rows+='<tr><td><code>'+esc(p.name)+'</code></td><td>'+esc(p.type||'string')+'</td><td>'+(p.required?'&#10003;':'&mdash;')+'</td><td>'+esc(p.description||'')+'</td></tr>';});
