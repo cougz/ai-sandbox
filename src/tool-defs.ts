@@ -195,5 +195,48 @@ export function buildBuiltinToolDefs(domainToolNames: string[]): ToolDef[] {
       ].join("\n"),
       params: [],
     },
+
+    // ── workspace_import ───────────────────────────────────────────────────
+    {
+      name: "workspace_import",
+      description: [
+        "Write data directly to a workspace file. The content is passed as a parameter",
+        "and written to the specified path — only a small metadata object is returned,",
+        "so the data does NOT echo back into the LLM context. This is the preferred way",
+        "to move large payloads (JSON API responses, CSV data, CLI output) into the",
+        "workspace without doubling context usage.",
+        "",
+        "Supports an optional Salesforce Aura response parser: set parse_salesforce_aura=true",
+        "to automatically extract certification records from a Chrome DevTools network",
+        "capture of a Salesforce runReport response. The parsed records array (ready for",
+        "enablement_report) is written as JSON to the destination path.",
+        "",
+        "Common patterns:",
+        "  • CLI output → workspace: pipe cloudflared/curl output into workspace_import",
+        "  • Chrome DevTools → workspace: capture network response, import with parsing",
+        "  • Any large data → workspace: avoid run_code round-trip for simple file writes",
+      ].join("\n"),
+      params: [
+        { name: "content", type: "string", description: "The data to write — any string content (JSON, CSV, HTML, plain text, etc.)", required: true },
+        { name: "path", type: "string", description: "Destination path in the workspace, e.g. '/data/salesforce-response.json'", required: true },
+        { name: "shared", type: "boolean", description: "true = write to shared workspace, false = personal workspace (default)", required: false },
+        { name: "parse_salesforce_aura", type: "boolean", description: "If true, parses Salesforce Aura runReport response and extracts certification records automatically", required: false },
+      ],
+    },
+
+    // ── workspace_export ───────────────────────────────────────────────────
+    {
+      name: "workspace_export",
+      description: [
+        "Read a file from the workspace and return its content.",
+        "Useful when you need workspace file data without writing run_code.",
+        "For large files, prefer using run_code with state.readFile() to process",
+        "data in the sandbox rather than pulling it all into LLM context.",
+      ].join("\n"),
+      params: [
+        { name: "path", type: "string", description: "Source path in the workspace, e.g. '/data/salesforce-response.json'", required: true },
+        { name: "shared", type: "boolean", description: "true = read from shared workspace, false = personal workspace (default)", required: false },
+      ],
+    },
   ];
 }

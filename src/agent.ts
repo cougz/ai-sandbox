@@ -369,6 +369,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
           "run_code", "run_bundled_code",
           "get_url",
           "tool_create", "tool_list", "tool_delete", "tool_reload",
+          "workspace_import", "workspace_export",
         ];
         const readTools = async (ws: Workspace): Promise<Array<{ name: string; description: string; path: string }>> => {
           const out: Array<{ name: string; description: string; path: string }> = [];
@@ -428,6 +429,159 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
         this.logTool("tool_reload");
         await this.loadUserTools();
         return { content: [{ type: "text" as const, text: "Custom tools reloaded from shared and personal /tools/ workspaces." }] };
+      }
+    );
+
+    // ── workspace_import ──────────────────────────────────────────────────────
+    // Writes data directly to a workspace file without the content appearing in
+    // the tool's return value.  This halves context usage for large payloads:
+    // the data enters the LLM context once (as the tool parameter) but the
+    // response is a tiny metadata object, not the full content echoed back.
+    this.server.tool(
+      "workspace_import",
+      toolDesc["workspace_import"],
+      {
+        content: z.string().describe("The data to write — any string content (JSON, CSV, HTML, plain text, etc.)"),
+        path: z.string().describe("Destination path in the workspace, e.g. '/data/salesforce-response.json'"),
+        shared: z.boolean().default(false).describe("true = write to shared workspace, false = personal workspace (default)"),
+        parse_salesforce_aura: z.boolean().default(false).describe(
+          "If true, treats content as a raw Salesforce Aura/Lightning runReport response and extracts " +
+          "certification records automatically. The parsed records array is written as JSON to the destination path. " +
+          "Use this when importing Chrome DevTools network responses from Salesforce report pages."
+        ),
+      },
+      async ({ content, path, shared, parse_salesforce_aura }) => {
+        this.logTool("workspace_import");
+        const targetWs = shared ? this.sharedWorkspace : this.workspace;
+        let bytesWritten = 0;
+        let recordCount: number | undefined;
+
+        try {
+          if (parse_salesforce_aura) {
+            // Parse Salesforce Aura runReport response → extract certification records
+            // Handles the common pattern: Chrome DevTools captured network response → workspace file
+            const cleaned = content.split("\n").map(line => {
+              const m = line.match(/^(\d+):\s(.*)/);
+              return m ? m[2] : line;
+            }).join("\n");
+
+            const data = JSON.parse(cleaned);
+
+            // Navigate the Aura response structure to find the factMap
+            let factMap: Record<string, { rows?: Array<{ dataCells?: Array<{ label?: string }> }> }>;
+            if (data?.actions?.[0]?.returnValue?.factMap) {
+              factMap = data.actions[0].returnValue.factMap;
+            } else if (data?.factMap) {
+              factMap = data.factMap;
+            } else {
+              return {
+                content: [{ type: "text" as const, text: JSON.stringify({
+                  status: "error",
+                  error: "salesforce_parse_failed",
+                  message: "Could not find factMap in the Salesforce response. Expected structure: { actions[0].returnValue.factMap } or { factMap }.",
+                }, null, 2) }],
+              };
+            }
+
+            const records: Array<Record<string, string>> = [];
+            for (const value of Object.values(factMap)) {
+              if (value.rows) {
+                for (const row of value.rows) {
+                  if (row.dataCells && row.dataCells.length >= 4) {
+                    records.push({
+                      contact_name: row.dataCells[0]?.label ?? "",
+                      certification_name: row.dataCells[1]?.label ?? "",
+                      certification_type: row.dataCells[2]?.label ?? "",
+                      date_expired: row.dataCells[3]?.label ?? "",
+                      cert_type_new: row.dataCells[4]?.label ?? "Other",
+                    });
+                  }
+                }
+              }
+            }
+
+            const json = JSON.stringify(records, null, 2);
+            await targetWs.writeFile(path, json);
+            bytesWritten = json.length;
+            recordCount = records.length;
+          } else {
+            // Direct write — no transformation
+            await targetWs.writeFile(path, content);
+            bytesWritten = content.length;
+          }
+
+          const result: Record<string, unknown> = {
+            status: "ok",
+            path,
+            workspace: shared ? "shared" : "personal",
+            bytes: bytesWritten,
+            message: `Data written to ${path} (${bytesWritten.toLocaleString()} bytes).`,
+          };
+          if (recordCount !== undefined) {
+            result.records_extracted = recordCount;
+            result.message = `Salesforce data parsed: ${recordCount} records extracted and saved to ${path} (${bytesWritten.toLocaleString()} bytes).`;
+          }
+
+          return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+              status: "error",
+              error: "write_failed",
+              path,
+              message: `Failed to write to workspace: ${msg}`,
+            }, null, 2) }],
+          };
+        }
+      }
+    );
+
+    // ── workspace_export ──────────────────────────────────────────────────────
+    // Reads a file from the workspace and returns its content.
+    // Useful when other MCP tools need workspace data without run_code.
+    this.server.tool(
+      "workspace_export",
+      toolDesc["workspace_export"],
+      {
+        path: z.string().describe("Source path in the workspace, e.g. '/data/salesforce-response.json'"),
+        shared: z.boolean().default(false).describe("true = read from shared workspace, false = personal workspace (default)"),
+      },
+      async ({ path, shared }) => {
+        this.logTool("workspace_export");
+        const targetWs = shared ? this.sharedWorkspace : this.workspace;
+        try {
+          const data = await targetWs.readFile(path);
+          if (data === null || data === undefined) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({
+                status: "error",
+                error: "not_found",
+                path,
+                message: `File not found: ${path}`,
+              }, null, 2) }],
+            };
+          }
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+              status: "ok",
+              path,
+              workspace: shared ? "shared" : "personal",
+              bytes: data.length,
+              content: data,
+            }, null, 2) }],
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+              status: "error",
+              error: "read_failed",
+              path,
+              message: `Failed to read from workspace: ${msg}`,
+            }, null, 2) }],
+          };
+        }
       }
     );
 
