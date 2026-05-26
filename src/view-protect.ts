@@ -262,8 +262,8 @@ export async function buildUnlockCookie(
   const raw = await crypto.subtle.sign("HMAC", key, enc.encode(payloadB64));
   const sig = toHex(raw);
   const value = `${sig}.${payloadB64}`;
-  // Path=/view scopes the cookie tightly — only sent on /view and /view/* requests.
-  const setCookie = `${name}=${value}; HttpOnly; Secure; SameSite=Strict; Path=/view; Max-Age=${COOKIE_TTL_SECONDS}`;
+  // __Host- prefix requires Path=/ (browser will silently reject the cookie otherwise).
+  const setCookie = `${name}=${value}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${COOKIE_TTL_SECONDS}`;
   return { name, value, setCookie };
 }
 
