@@ -9,6 +9,7 @@ export { ChatSession } from "./chat-session";
 
 import { McpAgent } from "agents/mcp";
 import { DynamicWorkerExecutor, resolveProvider } from "@cloudflare/codemode";
+import { codeMcpServer } from "@cloudflare/codemode/mcp";
 import { Workspace } from "@cloudflare/shell";
 import { stateTools } from "@cloudflare/shell/workers";
 import { createWorker } from "@cloudflare/worker-bundler";
@@ -129,6 +130,12 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
   // private field name, so the cast is safe at runtime.
   server = new McpServer({ name: "ai-sandbox", version: "1.0.0" });
 
+  // Underlying server that holds all the actual tools.  init() registers every
+  // built-in and user-defined tool here, then wraps it with codeMcpServer so the
+  // MCP client sees a single `code` tool instead of the full tool list.
+  // This keeps context-window usage constant regardless of how many tools exist.
+  private _upstreamServer?: McpServer;
+
   // D1-backed workspace: keyed by the user's email so files persist across sessions.
   get workspace(): Workspace {
     const email = this.props?.email ?? "anonymous";
@@ -164,7 +171,10 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
 
   // Register a single user-defined tool on the MCP server.
   // Called both from loadUserTools() at init and from tool_create at runtime.
-  registerUserTool(def: UserToolDef) {
+  // Accepts an optional targetServer so we can register on the underlying server
+  // before wrapping with codeMcpServer.
+  registerUserTool(def: UserToolDef, targetServer?: McpServer) {
+    const server = targetServer ?? this.server;
     const zodSchema = buildZodSchema(def.schema);
     const handler = async (args: Record<string, unknown>) => {
       this.logTool(def.name);
@@ -181,13 +191,13 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // If the tool is already registered (e.g. from a previous loadUserTools call),
     // update its handler and description in place rather than throwing a duplicate error.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const existing = (this.server as any)._registeredTools?.[def.name];
+    const existing = (server as any)._registeredTools?.[def.name];
     if (existing) {
       existing.update({ callback: handler, description: `[custom] ${def.description}` });
       return;
     }
 
-    this.server.tool(
+    server.tool(
       def.name,
       `[custom] ${def.description}`,
       zodSchema,
@@ -247,7 +257,9 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
   // Directory format takes precedence if both exist for the same name.
   // Global tools (shared workspace) are loaded first; personal tools load second
   // and can override a global tool with the same name.
-  async loadUserTools() {
+  // Accepts an optional targetServer so we can load onto the underlying server
+  // before wrapping with codeMcpServer.
+  async loadUserTools(targetServer?: McpServer) {
     const loadFrom = async (ws: Workspace) => {
       let entries: Array<{ path: string; type: string }> = [];
       try { entries = await ws.glob("/tools/**") as Array<{ path: string; type: string }>; }
@@ -265,7 +277,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
           if (!content) continue;
           const def: UserToolDef = JSON.parse(content);
           if (def.name && def.description && def.code) {
-            this.registerUserTool(def);
+            this.registerUserTool(def, targetServer);
             seen.add(m[1]);
           }
         } catch { /* skip malformed */ }
@@ -279,9 +291,20 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // All tool descriptions come from the single source of truth in tool-defs.ts
     // via the module-level `toolDesc` lookup.  Zod param descriptions are kept
     // in sync with the canonical params defined there.
+    //
+    // CONTEXT DEBLOAT: instead of registering every tool on `this.server` and
+    // sending the full tool list to the LLM on every request, we build an
+    // `_upstreamServer` with all the real tools, then wrap it with
+    // `codeMcpServer` so the MCP client sees a single `code` tool.
+    // The LLM writes JavaScript that calls typed `codemode.*` methods;
+    // the code runs in an isolated Dynamic Worker sandbox and dispatches
+    // back to the host via Workers RPC.
+
+    const upstream = new McpServer({ name: "ai-sandbox-internal", version: "1.0.0" });
+    this._upstreamServer = upstream;
 
     // ── run_code ──────────────────────────────────────────────────────────────
-    this.server.tool(
+    upstream.tool(
       "run_code",
       toolDesc["run_code"],
       { code: z.string().describe("JavaScript to run. Can use state.*, shared.*, and codemode.*") },
@@ -294,7 +317,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     );
 
     // ── run_bundled_code ──────────────────────────────────────────────────────
-    this.server.tool(
+    upstream.tool(
       "run_bundled_code",
       toolDesc["run_bundled_code"],
       {
@@ -318,7 +341,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     );
 
     // ── get_url ──────────────────────────────────────────────────────────────
-    this.server.tool(
+    upstream.tool(
       "get_url",
       toolDesc["get_url"],
       {
@@ -336,7 +359,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     );
 
     // ── tool_create ───────────────────────────────────────────────────────────
-    this.server.tool(
+    upstream.tool(
       "tool_create",
       toolDesc["tool_create"],
       {
@@ -356,7 +379,10 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
         const path = `/tools/${name}/tool.json`;
         const targetWs = global ? this.sharedWorkspace : this.workspace;
         await targetWs.writeFile(path, JSON.stringify(def, null, 2));
-        this.registerUserTool(def);
+        // Register on the underlying server so the wrapped server can dispatch to it.
+        if (this._upstreamServer) {
+          this.registerUserTool(def, this._upstreamServer);
+        }
         const location = global ? "Shared Workspace (global)" : "Personal Workspace";
         return {
           content: [{ type: "text" as const, text: `Tool '${name}' saved to ${path} in ${location} and registered in this session.` }],
@@ -365,7 +391,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     );
 
     // ── tool_list ─────────────────────────────────────────────────────────────
-    this.server.tool(
+    upstream.tool(
       "tool_list",
       toolDesc["tool_list"],
       {},
@@ -410,7 +436,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     );
 
     // ── tool_delete ───────────────────────────────────────────────────────────
-    this.server.tool(
+    upstream.tool(
       "tool_delete",
       toolDesc["tool_delete"],
       { name: z.string().describe("Name of the custom tool to delete") },
@@ -428,13 +454,13 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     );
 
     // ── tool_reload ───────────────────────────────────────────────────────────
-    this.server.tool(
+    upstream.tool(
       "tool_reload",
       toolDesc["tool_reload"],
       {},
       async () => {
         this.logTool("tool_reload");
-        await this.loadUserTools();
+        await this.loadUserTools(this._upstreamServer);
         return { content: [{ type: "text" as const, text: "Custom tools reloaded from shared and personal /tools/ workspaces." }] };
       }
     );
@@ -444,7 +470,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // the tool's return value.  This halves context usage for large payloads:
     // the data enters the LLM context once (as the tool parameter) but the
     // response is a tiny metadata object, not the full content echoed back.
-    this.server.tool(
+    upstream.tool(
       "workspace_import",
       toolDesc["workspace_import"],
       {
@@ -547,7 +573,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // ── workspace_export ──────────────────────────────────────────────────────
     // Reads a file from the workspace and returns its content.
     // Useful when other MCP tools need workspace data without run_code.
-    this.server.tool(
+    upstream.tool(
       "workspace_export",
       toolDesc["workspace_export"],
       {
@@ -597,7 +623,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // the recipient for the password before serving the file.  Backed by the
     // same OAUTH_KV store as the dashboard's Files tab — both surfaces see the
     // same protection state.
-    this.server.tool(
+    upstream.tool(
       "protect_file",
       toolDesc["protect_file"],
       {
@@ -657,7 +683,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     );
 
     // ── unprotect_file ────────────────────────────────────────────────────────
-    this.server.tool(
+    upstream.tool(
       "unprotect_file",
       toolDesc["unprotect_file"],
       {
@@ -697,7 +723,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     );
 
     // ── list_protected_files ──────────────────────────────────────────────────
-    this.server.tool(
+    upstream.tool(
       "list_protected_files",
       toolDesc["list_protected_files"],
       {
@@ -725,7 +751,13 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     );
 
     // Auto-load any custom tools the user has saved in their workspace.
-    await this.loadUserTools();
+    await this.loadUserTools(upstream);
+
+    // Wrap the upstream server with Code Mode so the MCP client sees a single
+    // `code` tool instead of the full tool list.  This keeps context-window
+    // usage constant regardless of how many built-in or user-defined tools exist.
+    const executor = new DynamicWorkerExecutor({ loader: this.env.LOADER, globalOutbound: null });
+    this.server = await codeMcpServer({ server: upstream, executor });
   }
 }
 
