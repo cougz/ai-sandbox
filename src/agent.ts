@@ -470,6 +470,10 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // the tool's return value.  This halves context usage for large payloads:
     // the data enters the LLM context once (as the tool parameter) but the
     // response is a tiny metadata object, not the full content echoed back.
+    //
+    // CHUNKED IMPORT: for files >100KB that exceed LLM output token limits,
+    // set append=true to send data in multiple smaller calls.  The handler
+    // reads the existing file, concatenates the new chunk, and writes back.
     upstream.tool(
       "workspace_import",
       toolDesc["workspace_import"],
@@ -477,19 +481,38 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
         content: z.string().describe("The data to write — any string content (JSON, CSV, HTML, plain text, etc.)"),
         path: z.string().describe("Destination path in the workspace, e.g. '/data/salesforce-response.json'"),
         shared: z.boolean().default(false).describe("true = write to shared workspace, false = personal workspace (default)"),
+        append: z.boolean().default(false).describe(
+          "If true, appends content to the existing file instead of overwriting. " +
+          "Use for chunked imports of large files that exceed LLM output token limits. " +
+          "The first call creates the file (append=false, the default), subsequent calls " +
+          "with append=true add to the end. Incompatible with parse_salesforce_aura."
+        ),
         parse_salesforce_aura: z.boolean().default(false).describe(
           "If true, treats content as a raw Salesforce Aura/Lightning runReport response and extracts " +
           "certification records automatically. The parsed records array is written as JSON to the destination path. " +
-          "Use this when importing Chrome DevTools network responses from Salesforce report pages."
+          "Use this when importing Chrome DevTools network responses from Salesforce report pages. " +
+          "Incompatible with append — the full response must be sent in a single call."
         ),
       },
-      async ({ content, path, shared, parse_salesforce_aura }) => {
+      async ({ content, path, shared, append, parse_salesforce_aura }) => {
         this.logTool("workspace_import");
         const targetWs = shared ? this.sharedWorkspace : this.workspace;
         let bytesWritten = 0;
         let recordCount: number | undefined;
 
         try {
+          // Validate mutually exclusive options
+          if (append && parse_salesforce_aura) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({
+                status: "error",
+                error: "invalid_options",
+                message: "append and parse_salesforce_aura cannot be used together. " +
+                  "Salesforce parsing requires the complete response in a single call.",
+              }, null, 2) }],
+            };
+          }
+
           if (parse_salesforce_aura) {
             // Parse Salesforce Aura runReport response → extract certification records
             // Handles the common pattern: Chrome DevTools captured network response → workspace file
@@ -537,6 +560,13 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
             await targetWs.writeFile(path, json);
             bytesWritten = json.length;
             recordCount = records.length;
+          } else if (append) {
+            // Append mode — read existing content, concatenate, write back.
+            // This enables chunked imports for files that exceed LLM output token limits.
+            const existing = await targetWs.readFile(path);
+            const merged = (existing ?? "") + content;
+            await targetWs.writeFile(path, merged);
+            bytesWritten = content.length;
           } else {
             // Direct write — no transformation
             await targetWs.writeFile(path, content);
@@ -550,6 +580,15 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
             bytes: bytesWritten,
             message: `Data written to ${path} (${bytesWritten.toLocaleString()} bytes).`,
           };
+          if (append) {
+            // For append mode, report useful progress info
+            const totalContent = await targetWs.readFile(path);
+            const totalBytes = totalContent?.length ?? bytesWritten;
+            result.append = true;
+            result.chunk_bytes = bytesWritten;
+            result.total_bytes = totalBytes;
+            result.message = `Chunk appended to ${path} (${bytesWritten.toLocaleString()} bytes this chunk, ${totalBytes.toLocaleString()} bytes total).`;
+          }
           if (recordCount !== undefined) {
             result.records_extracted = recordCount;
             result.message = `Salesforce data parsed: ${recordCount} records extracted and saved to ${path} (${bytesWritten.toLocaleString()} bytes).`;
