@@ -231,11 +231,16 @@ export function buildBuiltinToolDefs(domainToolNames: string[]): ToolDef[] {
         "NOTE: parse_salesforce_aura is incompatible with append — the full response must",
         "be sent in a single call for parsing to work correctly.",
         "",
+        "LARGE FILES (>100KB): use workspace_upload_url instead. It generates a single-use",
+        "upload URL, then you curl the file directly from disk — no LLM output tokens used.",
+        "See workspace_upload_url for the full workflow.",
+        "",
         "Common patterns:",
         "  • CLI output → workspace: pipe cloudflared/curl output into workspace_import",
         "  • Chrome DevTools → workspace: capture network response, import with parsing",
         "  • Any large data → workspace: avoid run_code round-trip for simple file writes",
         "  • Chunked import → for files >100KB, split and send with append=true",
+        "  • Very large files → use workspace_upload_url + bash curl instead",
       ].join("\n"),
       params: [
         { name: "content", type: "string", description: "The data to write — any string content (JSON, CSV, HTML, plain text, etc.)", required: true },
@@ -258,6 +263,30 @@ export function buildBuiltinToolDefs(domainToolNames: string[]): ToolDef[] {
       params: [
         { name: "path", type: "string", description: "Source path in the workspace, e.g. '/data/salesforce-response.json'", required: true },
         { name: "shared", type: "boolean", description: "true = read from shared workspace, false = personal workspace (default)", required: false },
+      ],
+    },
+
+    // ── workspace_upload_url ─────────────────────────────────────────────
+    {
+      name: "workspace_upload_url",
+      description: [
+        "Generate a single-use upload URL for importing large files into the workspace.",
+        "Use this when file content is too large to pass inline via workspace_import",
+        "(e.g. >100KB JSON, CSV, or Salesforce responses that exceed LLM output token limits).",
+        "",
+        "WORKFLOW:",
+        "  1. Call workspace_upload_url(path='/data/big-file.json') → returns an upload URL",
+        "  2. Use bash: curl -X POST --data-binary @/path/to/local/file \"<upload_url>\"",
+        "  3. The file is written directly to the workspace — no LLM output tokens used.",
+        "",
+        "The upload URL is single-use and expires in 5 minutes.",
+        "The curl command streams the file directly from disk to the server.",
+        "This bypasses all LLM token limits — files of any size can be uploaded.",
+      ].join("\n"),
+      params: [
+        { name: "path", type: "string", description: "Destination path in the workspace, e.g. '/data/salesforce-response.json'", required: true },
+        { name: "shared", type: "boolean", description: "true = write to shared workspace, false = personal workspace (default)", required: false },
+        { name: "parse_salesforce_aura", type: "boolean", description: "If true, the uploaded content will be parsed as a Salesforce Aura response and records extracted automatically.", required: false },
       ],
     },
 

@@ -401,7 +401,7 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
           "run_code", "run_bundled_code",
           "get_url",
           "tool_create", "tool_list", "tool_delete", "tool_reload",
-          "workspace_import", "workspace_export",
+          "workspace_import", "workspace_export", "workspace_upload_url",
           "protect_file", "unprotect_file", "list_protected_files",
         ];
         const readTools = async (ws: Workspace): Promise<Array<{ name: string; description: string; path: string }>> => {
@@ -666,6 +666,48 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     };
 
     upstream.tool("workspace_export", toolDesc["workspace_export"], workspaceExportSchema, workspaceExportHandler);
+
+    // ── workspace_upload_url ──────────────────────────────────────────────────
+    // Generates a single-use, time-limited upload URL for large files.
+    // The LLM calls this tool (tiny output: just a URL), then uses `bash curl`
+    // to POST the file directly.  No LLM output token limits involved.
+    upstream.tool(
+      "workspace_upload_url",
+      toolDesc["workspace_upload_url"],
+      {
+        path: z.string().describe("Destination path in the workspace, e.g. '/data/big-file.json'"),
+        shared: z.boolean().default(false).describe("true = write to shared workspace, false = personal workspace (default)"),
+        parse_salesforce_aura: z.boolean().default(false).describe(
+          "If true, the uploaded content will be parsed as a Salesforce Aura response."
+        ),
+      },
+      async ({ path, shared, parse_salesforce_aura }) => {
+        this.logTool("workspace_upload_url");
+        const email = this.props?.email ?? "anonymous";
+
+        // Generate a cryptographically random token
+        const tokenBytes = new Uint8Array(32);
+        crypto.getRandomValues(tokenBytes);
+        const token = Array.from(tokenBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+
+        // Store token metadata in KV with 5-minute TTL
+        const meta = JSON.stringify({ email, path, shared, parse_salesforce_aura });
+        await this.env.OAUTH_KV.put(`upload:${token}`, meta, { expirationTtl: 300 });
+
+        const base = this.env.PUBLIC_URL.replace(/\/$/, "");
+        const uploadUrl = `${base}/upload/${token}`;
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            status: "ok",
+            upload_url: uploadUrl,
+            expires_in: 300,
+            path,
+            message: `Upload URL generated. Use: curl -X POST --data-binary @/path/to/file "${uploadUrl}"`,
+          }, null, 2) }],
+        };
+      }
+    );
 
     // ── protect_file ──────────────────────────────────────────────────────────
     // Adds (or rotates) a password on a workspace file so its /view URL prompts

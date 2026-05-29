@@ -194,6 +194,94 @@ export async function handleRequest(
     return await sb.terminal(request, { cols: 220, rows: 50 });
   }
 
+  // ── Token-authenticated file upload ──────────────────────────────────────
+  // Accepts large file uploads without going through the LLM's output tokens.
+  // The MCP tool `workspace_upload_url` generates a single-use token stored in
+  // KV (5-minute TTL).  The LLM then uses `bash curl` to POST the file body
+  // directly to this endpoint.  No CF Access headers needed — the token IS
+  // the auth.  Works from any MCP client.
+  if (request.method === "POST" && pathname.startsWith("/upload/")) {
+    const token = pathname.slice("/upload/".length);
+    if (!token) return new Response("Missing upload token", { status: 400 });
+
+    const metaRaw = await env.OAUTH_KV.get(`upload:${token}`);
+    if (!metaRaw) return new Response("Invalid or expired upload token", { status: 403 });
+
+    // Token is single-use — delete immediately
+    await env.OAUTH_KV.delete(`upload:${token}`);
+
+    let meta: { email: string; path: string; shared: boolean; parse_salesforce_aura?: boolean };
+    try { meta = JSON.parse(metaRaw); }
+    catch { return new Response("Corrupt upload token", { status: 500 }); }
+
+    try {
+      const content = await request.text();
+      const ws = meta.shared ? makeSharedWorkspace(env) : makeWorkspace(meta.email, env);
+
+      if (meta.parse_salesforce_aura) {
+        // Same Salesforce Aura parsing logic as workspace_import
+        const cleaned = content.split("\n").map(line => {
+          const m = line.match(/^(\d+):\s(.*)/);
+          return m ? m[2] : line;
+        }).join("\n");
+
+        const data = JSON.parse(cleaned);
+        let factMap: Record<string, { rows?: Array<{ dataCells?: Array<{ label?: string }> }> }>;
+        if (data?.actions?.[0]?.returnValue?.factMap) {
+          factMap = data.actions[0].returnValue.factMap;
+        } else if (data?.factMap) {
+          factMap = data.factMap;
+        } else {
+          return new Response(JSON.stringify({
+            status: "error", error: "salesforce_parse_failed",
+            message: "Could not find factMap in the Salesforce response.",
+          }), { status: 400, headers: { "Content-Type": "application/json" } });
+        }
+
+        const records: Array<Record<string, string>> = [];
+        for (const value of Object.values(factMap)) {
+          if (value.rows) {
+            for (const row of value.rows) {
+              if (row.dataCells && row.dataCells.length >= 4) {
+                records.push({
+                  contact_name: row.dataCells[0]?.label ?? "",
+                  certification_name: row.dataCells[1]?.label ?? "",
+                  certification_type: row.dataCells[2]?.label ?? "",
+                  date_expired: row.dataCells[3]?.label ?? "",
+                  cert_type_new: row.dataCells[4]?.label ?? "Other",
+                });
+              }
+            }
+          }
+        }
+
+        const json = JSON.stringify(records, null, 2);
+        await ws.writeFile(meta.path, json);
+        writeLog(env as Env, _ctx, "info", "upload.token", {
+          email: meta.email, path: meta.path, bytes: json.length, records: records.length,
+        });
+        return new Response(JSON.stringify({
+          status: "ok", path: meta.path, bytes: json.length,
+          records_extracted: records.length,
+          message: `Salesforce data parsed: ${records.length} records → ${meta.path} (${json.length.toLocaleString()} bytes).`,
+        }), { headers: { "Content-Type": "application/json" } });
+      }
+
+      await ws.writeFile(meta.path, content);
+      writeLog(env as Env, _ctx, "info", "upload.token", {
+        email: meta.email, path: meta.path, bytes: content.length,
+      });
+      return new Response(JSON.stringify({
+        status: "ok", path: meta.path, bytes: content.length,
+        message: `Uploaded to ${meta.path} (${content.length.toLocaleString()} bytes).`,
+      }), { headers: { "Content-Type": "application/json" } });
+    } catch (err) {
+      return new Response(JSON.stringify({
+        status: "error", error: "upload_failed", message: String(err),
+      }), { status: 500, headers: { "Content-Type": "application/json" } });
+    }
+  }
+
   // ── Public: serve a workspace file ───────────────────────────────────────
   // The endpoint is fully public for unprotected files (backward compatible).
   // Files with a `protect:` record in OAUTH_KV require a password — the recipient
