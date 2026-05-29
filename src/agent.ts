@@ -474,188 +474,198 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // CHUNKED IMPORT: for files >100KB that exceed LLM output token limits,
     // set append=true to send data in multiple smaller calls.  The handler
     // reads the existing file, concatenates the new chunk, and writes back.
-    upstream.tool(
-      "workspace_import",
-      toolDesc["workspace_import"],
-      {
-        content: z.string().describe("The data to write — any string content (JSON, CSV, HTML, plain text, etc.)"),
-        path: z.string().describe("Destination path in the workspace, e.g. '/data/salesforce-response.json'"),
-        shared: z.boolean().default(false).describe("true = write to shared workspace, false = personal workspace (default)"),
-        append: z.boolean().default(false).describe(
-          "If true, appends content to the existing file instead of overwriting. " +
-          "Use for chunked imports of large files that exceed LLM output token limits. " +
-          "The first call creates the file (append=false, the default), subsequent calls " +
-          "with append=true add to the end. Incompatible with parse_salesforce_aura."
-        ),
-        parse_salesforce_aura: z.boolean().default(false).describe(
-          "If true, treats content as a raw Salesforce Aura/Lightning runReport response and extracts " +
-          "certification records automatically. The parsed records array is written as JSON to the destination path. " +
-          "Use this when importing Chrome DevTools network responses from Salesforce report pages. " +
-          "Incompatible with append — the full response must be sent in a single call."
-        ),
-      },
-      async ({ content, path, shared, append, parse_salesforce_aura }) => {
-        this.logTool("workspace_import");
-        const targetWs = shared ? this.sharedWorkspace : this.workspace;
-        let bytesWritten = 0;
-        let recordCount: number | undefined;
+    //
+    // DUAL REGISTRATION: registered on both `upstream` (codemode.workspace_import
+    // inside the JS sandbox) AND on `this.server` (direct top-level MCP tool).
+    // The direct registration is done after codeMcpServer wrapping at the end
+    // of init() — see the "Direct top-level tools" section below.
 
-        try {
-          // Validate mutually exclusive options
-          if (append && parse_salesforce_aura) {
+    const workspaceImportSchema = {
+      content: z.string().describe("The data to write — any string content (JSON, CSV, HTML, plain text, etc.)"),
+      path: z.string().describe("Destination path in the workspace, e.g. '/data/salesforce-response.json'"),
+      shared: z.boolean().default(false).describe("true = write to shared workspace, false = personal workspace (default)"),
+      append: z.boolean().default(false).describe(
+        "If true, appends content to the existing file instead of overwriting. " +
+        "Use for chunked imports of large files that exceed LLM output token limits. " +
+        "The first call creates the file (append=false, the default), subsequent calls " +
+        "with append=true add to the end. Incompatible with parse_salesforce_aura."
+      ),
+      parse_salesforce_aura: z.boolean().default(false).describe(
+        "If true, treats content as a raw Salesforce Aura/Lightning runReport response and extracts " +
+        "certification records automatically. The parsed records array is written as JSON to the destination path. " +
+        "Use this when importing Chrome DevTools network responses from Salesforce report pages. " +
+        "Incompatible with append — the full response must be sent in a single call."
+      ),
+    };
+
+    const workspaceImportHandler = async ({ content, path, shared, append, parse_salesforce_aura }: {
+      content: string; path: string; shared: boolean; append: boolean; parse_salesforce_aura: boolean;
+    }) => {
+      this.logTool("workspace_import");
+      const targetWs = shared ? this.sharedWorkspace : this.workspace;
+      let bytesWritten = 0;
+      let recordCount: number | undefined;
+
+      try {
+        // Validate mutually exclusive options
+        if (append && parse_salesforce_aura) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+              status: "error",
+              error: "invalid_options",
+              message: "append and parse_salesforce_aura cannot be used together. " +
+                "Salesforce parsing requires the complete response in a single call.",
+            }, null, 2) }],
+          };
+        }
+
+        if (parse_salesforce_aura) {
+          // Parse Salesforce Aura runReport response → extract certification records
+          // Handles the common pattern: Chrome DevTools captured network response → workspace file
+          const cleaned = content.split("\n").map(line => {
+            const m = line.match(/^(\d+):\s(.*)/);
+            return m ? m[2] : line;
+          }).join("\n");
+
+          const data = JSON.parse(cleaned);
+
+          // Navigate the Aura response structure to find the factMap
+          let factMap: Record<string, { rows?: Array<{ dataCells?: Array<{ label?: string }> }> }>;
+          if (data?.actions?.[0]?.returnValue?.factMap) {
+            factMap = data.actions[0].returnValue.factMap;
+          } else if (data?.factMap) {
+            factMap = data.factMap;
+          } else {
             return {
               content: [{ type: "text" as const, text: JSON.stringify({
                 status: "error",
-                error: "invalid_options",
-                message: "append and parse_salesforce_aura cannot be used together. " +
-                  "Salesforce parsing requires the complete response in a single call.",
+                error: "salesforce_parse_failed",
+                message: "Could not find factMap in the Salesforce response. Expected structure: { actions[0].returnValue.factMap } or { factMap }.",
               }, null, 2) }],
             };
           }
 
-          if (parse_salesforce_aura) {
-            // Parse Salesforce Aura runReport response → extract certification records
-            // Handles the common pattern: Chrome DevTools captured network response → workspace file
-            const cleaned = content.split("\n").map(line => {
-              const m = line.match(/^(\d+):\s(.*)/);
-              return m ? m[2] : line;
-            }).join("\n");
-
-            const data = JSON.parse(cleaned);
-
-            // Navigate the Aura response structure to find the factMap
-            let factMap: Record<string, { rows?: Array<{ dataCells?: Array<{ label?: string }> }> }>;
-            if (data?.actions?.[0]?.returnValue?.factMap) {
-              factMap = data.actions[0].returnValue.factMap;
-            } else if (data?.factMap) {
-              factMap = data.factMap;
-            } else {
-              return {
-                content: [{ type: "text" as const, text: JSON.stringify({
-                  status: "error",
-                  error: "salesforce_parse_failed",
-                  message: "Could not find factMap in the Salesforce response. Expected structure: { actions[0].returnValue.factMap } or { factMap }.",
-                }, null, 2) }],
-              };
-            }
-
-            const records: Array<Record<string, string>> = [];
-            for (const value of Object.values(factMap)) {
-              if (value.rows) {
-                for (const row of value.rows) {
-                  if (row.dataCells && row.dataCells.length >= 4) {
-                    records.push({
-                      contact_name: row.dataCells[0]?.label ?? "",
-                      certification_name: row.dataCells[1]?.label ?? "",
-                      certification_type: row.dataCells[2]?.label ?? "",
-                      date_expired: row.dataCells[3]?.label ?? "",
-                      cert_type_new: row.dataCells[4]?.label ?? "Other",
-                    });
-                  }
+          const records: Array<Record<string, string>> = [];
+          for (const value of Object.values(factMap)) {
+            if (value.rows) {
+              for (const row of value.rows) {
+                if (row.dataCells && row.dataCells.length >= 4) {
+                  records.push({
+                    contact_name: row.dataCells[0]?.label ?? "",
+                    certification_name: row.dataCells[1]?.label ?? "",
+                    certification_type: row.dataCells[2]?.label ?? "",
+                    date_expired: row.dataCells[3]?.label ?? "",
+                    cert_type_new: row.dataCells[4]?.label ?? "Other",
+                  });
                 }
               }
             }
-
-            const json = JSON.stringify(records, null, 2);
-            await targetWs.writeFile(path, json);
-            bytesWritten = json.length;
-            recordCount = records.length;
-          } else if (append) {
-            // Append mode — read existing content, concatenate, write back.
-            // This enables chunked imports for files that exceed LLM output token limits.
-            const existing = await targetWs.readFile(path);
-            const merged = (existing ?? "") + content;
-            await targetWs.writeFile(path, merged);
-            bytesWritten = content.length;
-          } else {
-            // Direct write — no transformation
-            await targetWs.writeFile(path, content);
-            bytesWritten = content.length;
           }
 
-          const result: Record<string, unknown> = {
-            status: "ok",
-            path,
-            workspace: shared ? "shared" : "personal",
-            bytes: bytesWritten,
-            message: `Data written to ${path} (${bytesWritten.toLocaleString()} bytes).`,
-          };
-          if (append) {
-            // For append mode, report useful progress info
-            const totalContent = await targetWs.readFile(path);
-            const totalBytes = totalContent?.length ?? bytesWritten;
-            result.append = true;
-            result.chunk_bytes = bytesWritten;
-            result.total_bytes = totalBytes;
-            result.message = `Chunk appended to ${path} (${bytesWritten.toLocaleString()} bytes this chunk, ${totalBytes.toLocaleString()} bytes total).`;
-          }
-          if (recordCount !== undefined) {
-            result.records_extracted = recordCount;
-            result.message = `Salesforce data parsed: ${recordCount} records extracted and saved to ${path} (${bytesWritten.toLocaleString()} bytes).`;
-          }
-
-          return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({
-              status: "error",
-              error: "write_failed",
-              path,
-              message: `Failed to write to workspace: ${msg}`,
-            }, null, 2) }],
-          };
+          const json = JSON.stringify(records, null, 2);
+          await targetWs.writeFile(path, json);
+          bytesWritten = json.length;
+          recordCount = records.length;
+        } else if (append) {
+          // Append mode — read existing content, concatenate, write back.
+          // This enables chunked imports for files that exceed LLM output token limits.
+          const existing = await targetWs.readFile(path);
+          const merged = (existing ?? "") + content;
+          await targetWs.writeFile(path, merged);
+          bytesWritten = content.length;
+        } else {
+          // Direct write — no transformation
+          await targetWs.writeFile(path, content);
+          bytesWritten = content.length;
         }
+
+        const result: Record<string, unknown> = {
+          status: "ok",
+          path,
+          workspace: shared ? "shared" : "personal",
+          bytes: bytesWritten,
+          message: `Data written to ${path} (${bytesWritten.toLocaleString()} bytes).`,
+        };
+        if (append) {
+          // For append mode, report useful progress info
+          const totalContent = await targetWs.readFile(path);
+          const totalBytes = totalContent?.length ?? bytesWritten;
+          result.append = true;
+          result.chunk_bytes = bytesWritten;
+          result.total_bytes = totalBytes;
+          result.message = `Chunk appended to ${path} (${bytesWritten.toLocaleString()} bytes this chunk, ${totalBytes.toLocaleString()} bytes total).`;
+        }
+        if (recordCount !== undefined) {
+          result.records_extracted = recordCount;
+          result.message = `Salesforce data parsed: ${recordCount} records extracted and saved to ${path} (${bytesWritten.toLocaleString()} bytes).`;
+        }
+
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            status: "error",
+            error: "write_failed",
+            path,
+            message: `Failed to write to workspace: ${msg}`,
+          }, null, 2) }],
+        };
       }
-    );
+    };
+
+    upstream.tool("workspace_import", toolDesc["workspace_import"], workspaceImportSchema, workspaceImportHandler);
 
     // ── workspace_export ──────────────────────────────────────────────────────
     // Reads a file from the workspace and returns its content.
     // Useful when other MCP tools need workspace data without run_code.
-    upstream.tool(
-      "workspace_export",
-      toolDesc["workspace_export"],
-      {
-        path: z.string().describe("Source path in the workspace, e.g. '/data/salesforce-response.json'"),
-        shared: z.boolean().default(false).describe("true = read from shared workspace, false = personal workspace (default)"),
-      },
-      async ({ path, shared }) => {
-        this.logTool("workspace_export");
-        const targetWs = shared ? this.sharedWorkspace : this.workspace;
-        try {
-          const data = await targetWs.readFile(path);
-          if (data === null || data === undefined) {
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify({
-                status: "error",
-                error: "not_found",
-                path,
-                message: `File not found: ${path}`,
-              }, null, 2) }],
-            };
-          }
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({
-              status: "ok",
-              path,
-              workspace: shared ? "shared" : "personal",
-              bytes: data.length,
-              content: data,
-            }, null, 2) }],
-          };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+    //
+    // DUAL REGISTRATION: also registered as a direct top-level MCP tool
+    // (see "Direct top-level tools" section at end of init()).
+
+    const workspaceExportSchema = {
+      path: z.string().describe("Source path in the workspace, e.g. '/data/salesforce-response.json'"),
+      shared: z.boolean().default(false).describe("true = read from shared workspace, false = personal workspace (default)"),
+    };
+
+    const workspaceExportHandler = async ({ path, shared }: { path: string; shared: boolean }) => {
+      this.logTool("workspace_export");
+      const targetWs = shared ? this.sharedWorkspace : this.workspace;
+      try {
+        const data = await targetWs.readFile(path);
+        if (data === null || data === undefined) {
           return {
             content: [{ type: "text" as const, text: JSON.stringify({
               status: "error",
-              error: "read_failed",
+              error: "not_found",
               path,
-              message: `Failed to read from workspace: ${msg}`,
+              message: `File not found: ${path}`,
             }, null, 2) }],
           };
         }
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            status: "ok",
+            path,
+            workspace: shared ? "shared" : "personal",
+            bytes: data.length,
+            content: data,
+          }, null, 2) }],
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            status: "error",
+            error: "read_failed",
+            path,
+            message: `Failed to read from workspace: ${msg}`,
+          }, null, 2) }],
+        };
       }
-    );
+    };
+
+    upstream.tool("workspace_export", toolDesc["workspace_export"], workspaceExportSchema, workspaceExportHandler);
 
     // ── protect_file ──────────────────────────────────────────────────────────
     // Adds (or rotates) a password on a workspace file so its /view URL prompts
@@ -797,6 +807,20 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // usage constant regardless of how many built-in or user-defined tools exist.
     const executor = new DynamicWorkerExecutor({ loader: this.env.LOADER, globalOutbound: null });
     this.server = await codeMcpServer({ server: upstream, executor });
+
+    // ── Direct top-level tools ────────────────────────────────────────────────
+    // workspace_import and workspace_export are registered BOTH on the upstream
+    // server (accessible via codemode.* inside the JS sandbox) AND directly on
+    // this.server (accessible as standalone MCP tool calls).
+    //
+    // Why?  The codemode proxy requires content to be embedded as a JS string
+    // literal in the `code` parameter, which means the full payload passes
+    // through the LLM's output token budget.  For large files (>100KB) this
+    // exceeds practical limits.  Direct top-level registration lets the MCP
+    // client call workspace_import with the content as a native tool parameter,
+    // bypassing the JS sandbox entirely.
+    this.server.tool("workspace_import", toolDesc["workspace_import"], workspaceImportSchema, workspaceImportHandler);
+    this.server.tool("workspace_export", toolDesc["workspace_export"], workspaceExportSchema, workspaceExportHandler);
   }
 }
 
