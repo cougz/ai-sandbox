@@ -475,10 +475,10 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // set append=true to send data in multiple smaller calls.  The handler
     // reads the existing file, concatenates the new chunk, and writes back.
     //
-    // DUAL REGISTRATION: registered on both `upstream` (codemode.workspace_import
-    // inside the JS sandbox) AND on `this.server` (direct top-level MCP tool).
-    // The direct registration is done after codeMcpServer wrapping at the end
-    // of init() — see the "Direct top-level tools" section below.
+    // For large files (>100KB) that exceed LLM output token limits, use
+    // workspace_upload_url instead — it generates a single-use upload URL
+    // so the file can be curl'd directly from disk without passing through
+    // the LLM's output.
 
     const workspaceImportSchema = {
       content: z.string().describe("The data to write — any string content (JSON, CSV, HTML, plain text, etc.)"),
@@ -620,8 +620,6 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // Reads a file from the workspace and returns its content.
     // Useful when other MCP tools need workspace data without run_code.
     //
-    // DUAL REGISTRATION: also registered as a direct top-level MCP tool
-    // (see "Direct top-level tools" section at end of init()).
 
     const workspaceExportSchema = {
       path: z.string().describe("Source path in the workspace, e.g. '/data/salesforce-response.json'"),
@@ -849,20 +847,6 @@ export class SandboxAgent extends McpAgent<Env, Record<string, never>, Props> {
     // usage constant regardless of how many built-in or user-defined tools exist.
     const executor = new DynamicWorkerExecutor({ loader: this.env.LOADER, globalOutbound: null });
     this.server = await codeMcpServer({ server: upstream, executor });
-
-    // ── Direct top-level tools ────────────────────────────────────────────────
-    // workspace_import and workspace_export are registered BOTH on the upstream
-    // server (accessible via codemode.* inside the JS sandbox) AND directly on
-    // this.server (accessible as standalone MCP tool calls).
-    //
-    // Why?  The codemode proxy requires content to be embedded as a JS string
-    // literal in the `code` parameter, which means the full payload passes
-    // through the LLM's output token budget.  For large files (>100KB) this
-    // exceeds practical limits.  Direct top-level registration lets the MCP
-    // client call workspace_import with the content as a native tool parameter,
-    // bypassing the JS sandbox entirely.
-    this.server.tool("workspace_import", toolDesc["workspace_import"], workspaceImportSchema, workspaceImportHandler);
-    this.server.tool("workspace_export", toolDesc["workspace_export"], workspaceExportSchema, workspaceExportHandler);
   }
 }
 
