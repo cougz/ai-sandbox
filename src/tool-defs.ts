@@ -241,8 +241,8 @@ export function buildBuiltinToolDefs(domainToolNames: string[]): ToolDef[] {
         { name: "content", type: "string", description: "The data to write — any string content (JSON, CSV, HTML, plain text, etc.)", required: true },
         { name: "path", type: "string", description: "Destination path in the workspace, e.g. '/data/salesforce-response.json'", required: true },
         { name: "shared", type: "boolean", description: "true = write to shared workspace, false = personal workspace (default)", required: false },
-        { name: "append", type: "boolean", description: "If true, appends content to the existing file instead of overwriting. Use for chunked imports of large files. Default false.", required: false },
-        { name: "parse_salesforce_aura", type: "boolean", description: "If true, parses Salesforce Aura runReport response and extracts certification records automatically. Incompatible with append.", required: false },
+        { name: "append", type: "boolean", description: "If true, appends content to the existing file instead of overwriting. Use for chunked imports of large files that exceed LLM output token limits. The first call creates the file (append=false, the default), subsequent calls with append=true add to the end. Incompatible with parse_salesforce_aura.", required: false },
+        { name: "parse_salesforce_aura", type: "boolean", description: "If true, treats content as a raw Salesforce Aura/Lightning runReport response and extracts certification records automatically. The parsed records array is written as JSON to the destination path. Use this when importing Chrome DevTools network responses from Salesforce report pages. Incompatible with append — the full response must be sent in a single call for parsing to work correctly.", required: false },
       ],
     },
 
